@@ -1,0 +1,293 @@
+{
+  "format": 1,
+  "updatedAt": "2026-10-28T07:54:37.955Z",
+  "nodes": {
+    "node-98": {
+      "ip": "172.16.2.98",
+      "role": "source",
+      "lastSeenAt": 1793174076948,
+      "connectedAt": 1793154241249,
+      "hostname": "localhost",
+      "agentVersion": null,
+      "uptimeSec": 2,
+      "configRevision": null,
+      "lastSeq": 0,
+      "components": {
+        "web": {
+          "id": "web",
+          "kind": "service",
+          "state": "unknown",
+          "pid": null,
+          "createdAt": null,
+          "exe": null,
+          "cmdline": null,
+          "cmdHash": null,
+          "cwd": null,
+          "port": 3333,
+          "listening": false,
+          "portOwner": null,
+          "matchBy": null,
+          "conn": null,
+          "health": {
+            "ok": false,
+            "checkedAt": 1793174075136,
+            "status": 0,
+            "detail": "进程不在"
+          },
+          "notes": [
+            "localRoot 不存在：E:\\nginx\\html\\dist"
+          ],
+          "observedAt": 1793174076948
+        },
+        "webapi": {
+          "id": "webapi",
+          "kind": "service",
+          "state": "unknown",
+          "pid": null,
+          "createdAt": null,
+          "exe": null,
+          "cmdline": null,
+          "cmdHash": null,
+          "cwd": null,
+          "port": 3601,
+          "listening": false,
+          "portOwner": null,
+          "matchBy": null,
+          "conn": null,
+          "health": {
+            "ok": false,
+            "checkedAt": 1793174075136,
+            "status": 0,
+            "detail": "进程不在"
+          },
+          "notes": [
+            "localRoot 不存在：E:\\SceneAutomationBuild\\SceneAutoApply"
+          ],
+          "observedAt": 1793174076948
+        },
+        "generateclient": {
+          "id": "generateclient",
+          "kind": "service",
+          "state": "unknown",
+          "pid": null,
+          "createdAt": null,
+          "exe": null,
+          "cmdline": null,
+          "cmdHash": null,
+          "cwd": null,
+          "port": null,
+          "listening": false,
+          "portOwner": null,
+          "matchBy": null,
+          "conn": {
+            "remote": "172.16.2.98:3601",
+            "established": false,
+            "count": 0
+          },
+          "health": {
+            "ok": false,
+            "checkedAt": 1793174075136,
+            "detail": "进程不在，无法建立连接"
+          },
+          "notes": [
+            "localRoot 不存在：E:\\SceneAutomationBuild\\GenerateClient",
+            "进程不在，无法建立连接"
+          ],
+          "observedAt": 1793174076948
+        },
+        "generatetool": {
+          "id": "generatetool",
+          "kind": "service",
+          "state": "unknown",
+          "pid": null,
+          "createdAt": null,
+          "exe": null,
+          "cmdline": null,
+          "cmdHash": null,
+          "cwd": null,
+          "port": null,
+          "listening": false,
+          "portOwner": null,
+          "matchBy": null,
+          "conn": {
+            "remote": "172.16.2.98:3601",
+            "established": false,
+            "count": 0
+          },
+          "health": {
+            "ok": false,
+            "checkedAt": 1793174075136,
+            "detail": "进程不在，无法建立连接"
+          },
+          "notes": [
+            "localRoot 不存在：E:\\SceneAutomationBuild\\GenerateTool",
+            "进程不在，无法建立连接"
+          ],
+          "observedAt": 1793174076948
+        },
+        "workerhost": {
+          "id": "workerhost",
+          "kind": "service",
+          "state": "unknown",
+          "pid": null,
+          "createdAt": null,
+          "exe": null,
+          "cmdline": null,
+          "cmdHash": null,
+          "cwd": null,
+          "port": null,
+          "listening": false,
+          "portOwner": null,
+          "matchBy": null,
+          "conn": {
+            "remote": "172.16.2.98:3601",
+            "established": false,
+            "count": 0
+          },
+          "health": {
+            "ok": false,
+            "checkedAt": 1793174075136,
+            "detail": "进程不在，无法建立连接"
+          },
+          "notes": [
+            "localRoot 不存在：E:\\SceneAutomationBuild\\SceneAutomation.WorkerHost",
+            "进程不在，无法建立连接"
+          ],
+          "observedAt": 1793174076948
+        },
+        "mcpserver": {
+          "id": "mcpserver",
+          "kind": "service",
+          "state": "unknown",
+          "pid": null,
+          "createdAt": null,
+          "exe": null,
+          "cmdline": null,
+          "cmdHash": null,
+          "cwd": null,
+          "port": 7077,
+          "listening": false,
+          "portOwner": null,
+          "matchBy": null,
+          "conn": null,
+          "health": {
+            "ok": false,
+            "checkedAt": 1793174075136,
+            "detail": "进程不在，跳过探活"
+          },
+          "notes": [
+            "localRoot 不存在：E:\\SceneAutomationBuild\\SceneAutoApply.McpServer"
+          ],
+          "observedAt": 1793174076948
+        },
+        "shp_plants": {
+          "id": "shp_plants",
+          "kind": "service",
+          "state": "unknown",
+          "pid": null,
+          "createdAt": null,
+          "exe": null,
+          "cmdline": null,
+          "cmdHash": null,
+          "cwd": null,
+          "port": 4000,
+          "listening": false,
+          "portOwner": null,
+          "matchBy": null,
+          "conn": null,
+          "health": {
+            "ok": false,
+            "checkedAt": 1793174075136,
+            "detail": "进程不在，跳过探活"
+          },
+          "notes": [
+            "localRoot 不存在：D:\\SceneAutomationV3\\Tools\\ShapefileTool.Plants.20230905"
+          ],
+          "observedAt": 1793174076948
+        },
+        "shp_buildings": {
+          "id": "shp_buildings",
+          "kind": "service",
+          "state": "unknown",
+          "pid": null,
+          "createdAt": null,
+          "exe": null,
+          "cmdline": null,
+          "cmdHash": null,
+          "cwd": null,
+          "port": 4001,
+          "listening": false,
+          "portOwner": null,
+          "matchBy": null,
+          "conn": null,
+          "health": {
+            "ok": false,
+            "checkedAt": 1793174075136,
+            "detail": "进程不在，跳过探活"
+          },
+          "notes": [
+            "localRoot 不存在：D:\\SceneAutomationV3\\Tools\\ShapefileTool.Buildings.20230905"
+          ],
+          "observedAt": 1793174076948
+        },
+        "tools": {
+          "id": "tools",
+          "kind": "asset",
+          "state": "unknown",
+          "pid": null,
+          "createdAt": null,
+          "exe": null,
+          "cmdline": null,
+          "cmdHash": null,
+          "cwd": null,
+          "port": null,
+          "listening": false,
+          "portOwner": null,
+          "matchBy": null,
+          "conn": null,
+          "health": null,
+          "notes": [
+            "localRoot 不存在：D:\\SceneAutomationV3\\Tools"
+          ],
+          "observedAt": 1793174076948
+        }
+      }
+    },
+    "node-149": {
+      "ip": "172.16.1.149",
+      "role": "target",
+      "lastSeenAt": null,
+      "connectedAt": null,
+      "hostname": null,
+      "agentVersion": null,
+      "uptimeSec": null,
+      "configRevision": null,
+      "lastSeq": 0,
+      "components": {}
+    },
+    "node-207": {
+      "ip": "172.16.1.207",
+      "role": "target",
+      "lastSeenAt": null,
+      "connectedAt": null,
+      "hostname": null,
+      "agentVersion": null,
+      "uptimeSec": null,
+      "configRevision": null,
+      "lastSeq": 0,
+      "components": {}
+    },
+    "node-145": {
+      "ip": "172.16.1.145",
+      "role": "target",
+      "lastSeenAt": null,
+      "connectedAt": null,
+      "hostname": null,
+      "agentVersion": null,
+      "uptimeSec": null,
+      "configRevision": null,
+      "lastSeq": 0,
+      "components": {}
+    }
+  }
+}

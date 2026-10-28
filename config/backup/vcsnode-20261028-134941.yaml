@@ -1,0 +1,563 @@
+# vcsNode 集群配置
+# 只有主节点（98）需要完整配置；成员节点只需要 cluster + 自己的 components 映射。
+# 标了 TODO 的项必须现场核验后填写，不要按默认值直接上生产。
+
+version: 1
+
+# ─────────────────────────────────────────────────────────────
+# 系统定义：一套「自动生成系统」由多个组件构成
+# 版本是系统级的：任何组件变化都产生新的 releaseId，
+# 所有机器看到同一个系统版本；但只传输变化的文件、只重启变化的组件。
+# ─────────────────────────────────────────────────────────────
+system:
+  id: autogen
+  name: 自动生成系统
+
+cluster:
+  master: 172.16.2.98:47821
+  secret: "REPLACE_WITH_LONG_RANDOM_STRING"
+  # 控制面：成员主动建立一条出站常驻连接（SSE），98 有指令时沿这条连接推下去。
+  # 方向仍是成员→98，不需要在防火墙上开任何入站端口。
+  # 立即下发的前提是 members 与 98 之间这条连接一直握着，不靠定时轮询。
+  transport: sse                 # sse | longpoll（现场链路杀空闲连接时降级）
+  heartbeatMs: 15000             # 服务端每 15s 推一个 ping，保活 + 让客户端判死
+  clientReadTimeoutMs: 45000     # 客户端连续这么久没收到任何字节 → 判定链路失效并重连
+  longPollHoldMs: 25000          # transport=longpoll 时单次挂起上限
+  reconnectBackoffMs: [1000, 2000, 5000, 10000, 30000]   # 指数退避，附加 0~30% 抖动
+  taskLeaseMs: 120000
+  allowedPeers:
+    - 172.16.1.0/24
+    - 172.16.2.0/24
+
+# 配置层级（优先级从低到高）：
+#   ① 本文件                  = 组件默认（有什么组件、怎么启停、怎么判活、默认端口）
+#   ② nodes.<ip>.*            = 节点覆盖（可覆盖 sharedRoot / localRoot / port / 启用与否）
+#   ③ agent.bootstrap.json    = 本机引导，只在各机本地，永不被下发覆盖
+#                               只含 master 地址、nodeId、secret、cacheDir
+# 现场四台机器的共享目录可能不同，所以 sharedRoot 允许按节点覆盖。
+
+storage:
+  sharedRoot: '\\172.16.2.98\Tools'
+  storeDir: '_vcs'
+  # 本机配置保留区（各机自己维护，永不参与同步）。
+  # 结构：<localConfigRoot>\<组件>\<相对路径>，例如 …\_config\generateclient\appsettings.json
+  # 每个 release 组装完 → 构建完 → 从这里回填，回填发生在 start 之前。
+  localConfigRoot: 'D:\SceneAutomationV3\_config'
+  keepReleases: 5
+  minFreePercent: 10
+  signManifests: true
+
+sync:
+  trigger: manual
+  watchDebounceMs: 10000
+  restartAfterSync: true
+  assemble: hardlink
+
+# ─────────────────────────────────────────────────────────────
+# 监控默认值，可被单个组件覆盖
+# ─────────────────────────────────────────────────────────────
+monitor:
+  intervalMs: 5000
+  restart:
+    policy: on-failure
+    maxAttempts: 5
+    windowMs: 600000
+    backoffMs: 2000
+
+# ─────────────────────────────────────────────────────────────
+# 组件定义：与机器无关
+#
+# kind:
+#   service  常驻进程，有 PID                         → process (+ port / connection / http)
+#   task     一次性任务，跑完退出                      → 只看最近一次退出码
+#   asset    纯文件（脚本/模板/资产），无进程           → 只同步，不判活、不重启
+#   library  被宿主加载的库                            → 跟随 dependsOn 宿主重启
+#
+# health.type:
+#   http        发 HTTP 请求看状态码          → 有 Swagger 的 ASP.NET 服务优先用
+#   tcp         只测端口能否连上              → 静态站点、无健康接口时退化用
+#   connection  查进程到 Hub 的 ESTABLISHED   → SignalR 客户端专用
+#   process     只判进程存活                  → 最后兜底
+#
+# 注意：sources 中各组件目录不能重叠，否则变更归因会重复。
+# ─────────────────────────────────────────────────────────────
+components:
+
+  web:
+    kind: service
+    port: 3333                    # 98/149；207 覆盖为 3071
+    updateMode: in-place          # 源码运行 + vite dev，改动由 HMR 直接生效
+    start:
+      cmd: npm
+      args: ["run", "dev", "--", "--port", "{port}", "--strictPort"]
+      cwd: "."
+      env:
+        VITE_API_TARGET: "http://{webapiHost}:3601"   # vite.config.ts 已支持该变量
+    identify:
+      name: node.exe
+      cmdlineIncludes: ["vite"]
+    health:
+      type: http
+      path: /
+      expectStatus: 200
+      timeoutMs: 5000
+    # 只有依赖或构建配置变了才需要重启；普通 src 改动 HMR 处理
+    restartOn: ["package.json", "package-lock.json", "vite.config.ts"]
+    stage:
+      # 依赖变更才装包。web 是 in-place 部署，node_modules 就地保留，不需要每次重建
+      deps:
+        when: ["package.json", "package-lock.json"]
+        cmd: npm
+        args: ["install", "--no-audit", "--no-fund"]
+        cwd: "."
+        timeoutMs: 600000
+    # 本机差异，禁止同步；每次覆盖前从本地保留区回填
+    localConfig: ["public/config.js"]
+    dependsOn: [webapi]
+
+  webapi:
+    kind: service
+    port: 3601
+    updateMode: release-switch
+    stage:
+      # 构建放 STAGE：COMMIT 只做「停→切→起」，停机窗口 1~3 秒
+      build:
+        cmd: dotnet
+        args: ["build", "SceneAutoApply.csproj", "-c", "Release", "-o", "bin", "--nologo"]
+        cwd: "."
+        timeoutMs: 300000
+    start:
+      cmd: dotnet
+      args: ["bin/SceneAutoApply.dll"]
+      cwd: "."
+      env:
+        # launchSettings 只对 dotnet run 生效；dotnet xxx.dll 必须显式给监听地址
+        ASPNETCORE_URLS: "http://0.0.0.0:3601"
+    identify:
+      name: dotnet.exe
+      cmdlineIncludes: ["SceneAutoApply.dll"]
+    health:
+      type: http
+      path: /swagger/index.html
+      expectStatus: 200
+      timeoutMs: 10000
+    localConfig: ["appsettings.json", "nlog.config"]
+    dependsOn: []
+
+  generateclient:
+    kind: service
+    port: null                    # 无入站端口，纯 SignalR 客户端
+    updateMode: release-switch
+    stage:
+      build:
+        cmd: dotnet
+        args: ["build", "GenerateClient.csproj", "-c", "Release", "-o", "bin", "--nologo"]
+        cwd: "."
+        timeoutMs: 600000
+    start:
+      cmd: dotnet
+      args: ["bin/GenerateClient.dll"]
+      cwd: "."                    # ConfigHelper 用 GetCurrentDirectory() 读 appsettings.json
+    identify:
+      name: dotnet.exe
+      cmdlineIncludes: ["GenerateClient.dll"]
+    health:
+      # 「进程在但 SignalR 断了」是最常见假活，必须查连接
+      type: connection
+      remoteHost: 172.16.2.98      # 同 set 的 webapi；207/145/149 按节点覆盖
+      remotePort: 3601
+      timeoutMs: 5000
+    localConfig: ["appsettings.json", "nlog.config"]
+    dependsOn: [webapi, generatetool]
+
+  generatetool:
+    kind: service
+    port: null
+    updateMode: release-switch
+    stage:
+      build:
+        cmd: dotnet
+        args: ["build", "GenerateTool.csproj", "-c", "Release", "-o", "bin", "--nologo"]
+        cwd: "."
+        timeoutMs: 600000
+    start:
+      cmd: dotnet
+      args: ["bin/GenerateTool.dll"]
+      cwd: "."
+    identify:
+      name: dotnet.exe
+      cmdlineIncludes: ["GenerateTool.dll"]
+    health:
+      type: connection
+      remoteHost: 172.16.2.98
+      remotePort: 3601
+      timeoutMs: 5000
+    localConfig: ["appsettings.json", "nlog.config"]
+    dependsOn: [webapi]
+
+  # 统一 Worker 宿主（项目 SceneAutomation.WorkerHost）：控制台宿主，没有入站端口。
+  # 部署在 98 / 149 / 145；连所在节点的 webapi，所以判活 = 进程 + 到 3601 的 ESTABLISHED。
+  # 现场用 cmd 拉起：dotnet SceneAutomation.WorkerHost.dll
+  workerhost:
+    kind: service
+    port: null
+    updateMode: release-switch
+    start:
+      cmd: cmd.exe
+      args: ["/c", "dotnet SceneAutomation.WorkerHost.dll"]
+      cwd: "."
+    identify:
+      name: dotnet.exe
+      cmdlineIncludes: ["SceneAutomation.WorkerHost.dll"]
+    health:
+      type: connection
+      remoteHost: 172.16.2.98      # 207/145/149 按节点覆盖
+      remotePort: 3601
+      timeoutMs: 5000
+    localConfig: ["appsettings.json"]
+    dependsOn: [webapi]
+
+  # MCP Server（项目 SceneAutoApply.McpServer）：Agent 通过 /mcp（Streamable HTTP）调工具。
+  # 现场用 cmd 拉起：SceneAutoApply.McpServer.exe --transport http --port 7077
+  # ⚠ appsettings 默认 Transport=stdio_local，HTTP 模式必须显式带 --transport http。
+  mcpserver:
+    kind: service
+    port: 7077
+    updateMode: release-switch
+    start:
+      cmd: cmd.exe
+      args: ["/c", "SceneAutoApply.McpServer.exe --transport http --port 7077"]
+      cwd: "."
+    identify:
+      name: SceneAutoApply.McpServer.exe
+      cmdlineIncludes: ["SceneAutoApply.McpServer"]
+    health:
+      type: tcp
+      port: 7077
+      timeoutMs: 3000
+    localConfig: ["appsettings.json"]
+    dependsOn: [webapi]
+
+  # 可选：AI 服务。部署位置手册里标「待现场确认」。
+  aigenerate:
+    enabled: false                # TODO 现场确认
+    kind: service
+    port: 5231
+    start:
+      cmd: dotnet
+      args: ["AIGenerate.dll"]
+      cwd: "."
+    identify:
+      name: dotnet.exe
+      cmdlineIncludes: ["AIGenerate.dll"]
+    health:
+      type: http
+      path: /swagger/index.html
+      expectStatus: 200
+      timeoutMs: 10000
+    dependsOn: [webapi]
+
+  # ── 工具链里的两个常驻 HTTP 服务 ────────────────────────────
+  # 配置里叫 UEPlantServer / UEBuildingServer，其实是 Node express，与 Unreal 无关。
+  # pm2.config.cjs 里 autorestart:false，进程挂了不会自愈，必须靠 vcsNode 兜住。
+  shp_plants:
+    kind: service
+    port: 4000
+    updateMode: in-place         # 文件就地覆盖，但 Node 缓存模块，必须重启才生效
+    start:
+      cmd: node
+      args: ["index.js"]
+      cwd: "."
+    identify:
+      name: node.exe
+      cmdlineIncludes: ["ShapefileTool.Plants"]
+    health:
+      type: tcp
+      port: 4000
+      timeoutMs: 3000
+    dependsOn: []
+
+  shp_buildings:
+    kind: service
+    port: 4001
+    updateMode: in-place
+    start:
+      cmd: node
+      args: ["index.js"]
+      cwd: "."
+    identify:
+      name: node.exe
+      cmdlineIncludes: ["ShapefileTool.Buildings"]
+    health:
+      type: tcp
+      port: 4001
+      timeoutMs: 3000
+    dependsOn: []
+
+  # ── 其余工具链：纯文件，无进程 ──────────────────────────────
+  # AssetPipelineTool / DemProcessTool / GisFileTools / GlbDatasmithTool /
+  # PyQgisTools / RevitTools* / TaskJson / AutomationUE5.3 / SceneAutomationGeneration
+  # 全部是「被后端用 cmd.exe /c 拉起、跑完即退」的短命子进程，不是常驻服务。
+  tools:
+    kind: asset
+    updateMode: in-place         # 被后端用 cmd.exe /c 拉起，跑完即退，下次任务即生效
+    start: null
+    identify: null
+    health: null
+    dependsOn: []
+
+# ─────────────────────────────────────────────────────────────
+# 扫描源：98 上「会被修改的那份目录」→ 组件 的映射
+# 只有 98 需要。目录之间不能重叠。
+#
+# 已确认：**扫描 98 的部署目录**（不是 git 仓库）。
+#
+# 由此推出的两条必然结论：
+#   1. 不需要 preBuild 钩子 —— 98 上构建与否不影响扫描结果
+#   2. bin/ obj/ 必须排除（见下方 exclude）：只同步源码与配置，
+#      编译在成员的 STAGE 阶段做（dotnet build -o bin）
+#
+# ⚠ 待核实：98 的部署目录里是否有 .csproj / .cs 源码。
+#   若只有编译好的 dll（没有源码），则"成员各自构建"不成立，
+#   要改成"同步编译产物"。第 1 步采样会暴露（看进程 cwd 下有没有 csproj）。
+# ─────────────────────────────────────────────────────────────
+sources:
+  web:            'D:\SceneAutomationV3\Web'                       # TODO 前端站点根
+  webapi:         'D:\SceneAutomationV3\SceneAutoApply'            # TODO 后端发布目录
+  generateclient: 'D:\SceneAutomationV3\GenerateClient'            # TODO
+  generatetool:   'D:\SceneAutomationV3\GenerateTool'              # TODO
+  # Tools 是共享目录，里面混着大量与仓库无关的本地/第三方内容。
+  # 实测 207 看到 Tools 根有 35 项，而仓库 Tools/ 只有 11 个目录，
+  # 多出来的是：CesiumlabTools、cesiumlab4_4.0.10、ComfyUI-aki-v1.7、
+  #             CE_assets、CE_Template、BuildingPreviewPython …
+  # 这些是各机本地安装的第三方/资产，不参与同步 —— 所以必须用白名单，
+  # 绝不能按整个目录扫，否则会把几十 GB 第三方内容当成增量。
+  tools:
+    path: 'D:\SceneAutomationV3\Tools'                             # 已确认（共享根）
+    include:
+      # 仓库 Tools/ 下的 9 个目录
+      - 'AssetPipelineTool'
+      - 'DemProcessTool'
+      - 'GisFileTools'
+      - 'GlbDatasmithTool'
+      - 'PyQgisTools'
+      - 'RevitTools'
+      - 'RevitTools2020'
+      - 'RevitTools2024'
+      - 'TaskJson'
+      # 仓库另外两个顶层目录，部署时落到 Tools 下
+      - 'AutomationUE5.3'                # ← Unreal脚本/AutomationUE5.3
+      - 'SceneAutomationGeneration'      # ← CityEngine脚本/SceneAutomationGeneration
+      # UE 模板 zip 就在 Tools 根下，是 GenerateClient 的功能依赖。
+      # 全局忽略里有 *.zip，这里必须显式列出来，否则会被一刀切排除。
+      - 'TP_TuguanStreaming.zip'
+      - 'TP_TuguanStreamingV5.zip'
+  shp_plants:     'D:\SceneAutomationV3\Tools\ShapefileTool.Plants.20230905'
+  shp_buildings:  'D:\SceneAutomationV3\Tools\ShapefileTool.Buildings.20230905'
+  # 两个 .NET 服务：98 上是「发布目录」（exe/dll + appsettings），不是源码目录。
+  mcpserver:      'D:\SceneAutomationV3\McpServer'
+  workerhost:     'D:\SceneAutomationV3\WorkerHost'
+
+# ─────────────────────────────────────────────────────────────
+# 一个源文件 → 多个落地位置（仓库既有约定，见 Tools/update_changed_tools_to_v3.ps1）
+# 二级目标写入后必须再做一次 sha256 校验。
+# 注意：CE_Template 整个目录只有这两个文件是纳管的，其余内容属本地资产，
+#      所以不能把 CE_Template 加进上面 sources.tools.include。
+# ─────────────────────────────────────────────────────────────
+secondaryMappings:
+  - from: 'D:\SceneAutomationV3\Tools\SceneAutomationGeneration\CEScripts\startup.py'
+    to:   'D:\SceneAutomationV3\Tools\CE_Template\startup.py'
+  - from: 'D:\SceneAutomationV3\Tools\SceneAutomationGeneration\CEScripts\AutoCE.py'
+    to:   'D:\SceneAutomationV3\Tools\CE_Template\CETemplate\scripts\AutoCE.py'
+
+# ─────────────────────────────────────────────────────────────
+# 管理范围 = 声明过的组件
+#
+# 只有出现在 components / sources / nodes 里的东西才会被：
+#   扫描 · 同步 · 监控 · 探测 · 启停
+# 其余一律不感知 —— 不遍历、不哈希、不列进程、不报警。
+#
+# 因此不需要 dataDirs 之类的黑名单：扫描范围由上面的 include 白名单决定。
+# 唯一要守的约束是「sources 必须是具体组件目录」——
+# 校验时拒绝把 sources 指到部署根（D:\SceneAutomationV3\），
+# 否则会把 ProjectFolder / TaskFolder / P4Workspace 这些几十 GB 的运行期数据卷进来。
+# ─────────────────────────────────────────────────────────────
+
+# 不参与同步的内容（gitignore 语法）。
+# 只作用在「已被白名单纳管」的目录内部，不会影响范围之外的内容。
+exclude:
+  - node_modules/
+  - .git/
+  - .vs/
+  - bin/
+  - obj/
+  - "*.log"
+  - "*.pdb"
+  - NLogs/
+  - App_Data/Logs/
+  - App_Data/Tasks/
+  - App_Data/GeoJsonTasks/
+  - App_Data/OverpassCache/
+  - App_Data/AiBoundaryCache/
+  - __pycache__/
+  # .venv 内含绝对路径，跨机复制必坏。每台机器首次部署自己 uv sync（uv.lock 已随代码同步）。
+  - .venv/
+  - venv/
+  - .vcs/
+  - .vcsbak/
+  - _vcs/
+  - _deployment_backups/
+  - logs/
+  - "*.rar"
+  - "*.7z"
+  - "*.hm"
+  - "*.terrain"
+  # 大包默认不同步，避免首次推送被几 GB 卡死。
+  # 但 TP_TuguanStreaming*.zip 是 UE 模板功能依赖，必须放行（见 sources.tools.include）。
+  - "*.zip"
+  - "!TP_TuguanStreaming.zip"
+  - "!TP_TuguanStreamingV5.zip"
+  # ── 本机配置：绝不覆盖目标机，见 storage.localConfigRoot ──
+  # 仍然会传到 release 里，但改名成 <name>.repo 供对比，不覆盖生效中的配置
+  - appsettings.json
+  - nlog.config
+  - public/config.js
+
+# ─────────────────────────────────────────────────────────────
+# 机器清单
+#   role: source = 发布源（98），不被自己同步
+#   role: target = 接收端，拉取/校验/落盘/重启
+#
+# 端口与前端路径按环境不同，所以在节点上覆盖，不写死在组件里。
+#
+# ⚠ 布局实测（2026-10-26）：
+#   98 / 145 / 149  Tools = D:\SceneAutomationV3\Tools    （145/149 已确认）
+#   207             Tools = D:\Digihail\SceneAutoApply\Tools   ← **与其他三台不同**
+#
+#   由 Tools 路径反推的部署根（D:\SceneAutomationV3 / D:\Digihail\SceneAutoApply）
+#   以及各组件子目录（Web / SceneAutoApply / GenerateClient / GenerateTool）
+#   仍是推测。第 1 步的采样会输出每个进程的 cwd 与 ExecutablePath，
+#   用真实值替换即可 —— 不必再逐个问。
+#
+#   填写规则：localRoot 必须是**该节点本地**的绝对路径；
+#   null 表示「未知」，校验会报错并拒绝启用该组件（不会静默用错路径）。
+# ─────────────────────────────────────────────────────────────
+nodes:
+  172.16.2.98:
+    id: node-98
+    role: source
+    os: windows
+    selfManage: false
+    env: test
+    components:
+      web:            { localRoot: 'E:\nginx\html\dist' }
+      webapi:         { localRoot: 'E:\vcsNode\project\WEB后端\SceneAutoApply' }
+      generateclient: { localRoot: 'E:\vcsNode\project\WEB后端\SceneAutoApply\GenerateClient' }
+      generatetool:   { localRoot: 'E:\vcsNode\project\WEB后端\SceneAutoApply\GenerateTool' }
+      tools:          { localRoot: 'E:\vcsNode\project\Tools' }
+      shp_plants:     { localRoot: 'E:\vcsNode\project\Tools\ShapefileTool.Plants.20230905' }
+      shp_buildings:  { localRoot: 'E:\vcsNode\project\Tools\ShapefileTool.Buildings.20230905' }
+      workerhost:     { localRoot: 'E:\vcsNode\project\WEB后端\SceneAutoApply\SceneAutomation.WorkerHost' }
+      mcpserver:      { localRoot: 'E:\vcsNode\project\WEB后端\SceneAutoApply\SceneAutoApply.McpServer' }
+
+  172.16.1.149:
+    id: node-149
+    role: target
+    os: windows
+    env: prod
+    note: '与 207/145 同网段（172.16.1.x），与 98 跨网段；前端端口形态待核对'
+    components:
+      web:
+        localRoot: 'D:\SceneAutomationV3\Web'
+        # port: 3333                 # TODO 待核对（同为生产网段，也可能用 3071）
+      webapi:         { localRoot: 'D:\SceneAutomationV3\SceneAutoApply' }
+      generateclient:
+        localRoot: 'D:\SceneAutomationV3\GenerateClient'
+        health:
+          type: connection
+          remoteHost: 172.16.1.149 # 本机 webapi，不能用默认值 172.16.2.98
+          remotePort: 3601
+      generatetool:
+        localRoot: 'D:\SceneAutomationV3\GenerateTool'
+        health:
+          type: connection
+          remoteHost: 172.16.1.149
+          remotePort: 3601
+      tools:          { localRoot: 'D:\SceneAutomationV3\Tools' }    # Tools 路径已确认
+      shp_plants:     { localRoot: 'D:\SceneAutomationV3\Tools\ShapefileTool.Plants.20230905' }
+      shp_buildings:  { localRoot: 'D:\SceneAutomationV3\Tools\ShapefileTool.Buildings.20230905' }
+      workerhost:
+        localRoot: 'D:\SceneAutomationV3\WorkerHost'
+        health:                     # 本机 webapi
+          type: connection
+          remoteHost: 172.16.1.149
+          remotePort: 3601
+      mcpserver:      { localRoot: 'D:\SceneAutomationV3\McpServer' }
+
+  172.16.1.207:
+    id: node-207
+    role: target
+    os: windows
+    env: prod
+    note: '布局与其他三台不同：Tools 在 D:\Digihail\SceneAutoApply\Tools'
+    components:
+      # TODO web / webapi 的确切目录未确认，留 null 待第 1 步采样（cwd + ExecutablePath）填充。
+      #      父目录已知是 D:\Digihail\SceneAutoApply，但子目录名不能猜。
+      web:
+        localRoot: null
+        port: 3071                  # 生产前端端口
+      webapi:
+        localRoot: null
+      # 207 现在只同步 web + webapi；Tools 路径已确认，但暂不纳管（要不要同步到这里待定）。
+      tools:
+        enabled: false
+        localRoot: 'D:\Digihail\SceneAutoApply\Tools'
+      # McpServer 子目录名未确认（父目录 D:\Digihail\SceneAutoApply 已确认）
+      mcpserver:
+        localRoot: null
+
+  172.16.1.145:
+    id: node-145
+    role: target
+    os: windows
+    env: prod
+    note: '仅 generateclient + generatetool + tools，没有 webapi'
+    # 该机自己看到的共享路径可能与全局不同（共享名 / 映射盘 / DFS 都可能不同）。
+    # 留空则沿用 storage.sharedRoot。用配置页「探测」按钮实测，别凭记忆填。
+    # storage:
+    #   sharedRoot: '\\172.16.2.98\sense_automation_v3\tools'
+    # 注意：仓库里的 appsettings.json 把 SignalRUrl 写成 http://172.16.1.145:3601/chatHub
+    # （指向自己），而 145 上没有 webapi。该文件必须各机独立维护、禁止同步，
+    # 145 上应写 http://172.16.1.207:3601/chatHub，否则客户端会「进程活着但注册不上」。
+    components:
+      generateclient:
+        localRoot: 'D:\SceneAutomationV3\GenerateClient'
+        health:                     # 145 的客户端连的是 207 的 webapi
+          type: connection
+          remoteHost: 172.16.1.207
+          remotePort: 3601
+      generatetool:
+        localRoot: 'D:\SceneAutomationV3\GenerateTool'
+        health:
+          type: connection
+          remoteHost: 172.16.1.207
+          remotePort: 3601
+      tools:          { localRoot: 'D:\SceneAutomationV3\Tools' }    # Tools 路径已确认
+      shp_plants:     { localRoot: 'D:\SceneAutomationV3\Tools\ShapefileTool.Plants.20230905' }
+      shp_buildings:  { localRoot: 'D:\SceneAutomationV3\Tools\ShapefileTool.Buildings.20230905' }
+      workerhost:
+        localRoot: 'D:\SceneAutomationV3\WorkerHost'
+        health:                     # 145 没有 webapi，连 207
+          type: connection
+          remoteHost: 172.16.1.207
+          remotePort: 3601
+
+# ─────────────────────────────────────────────────────────────
+# 事务边界：同一 set 内必须同版本，跨 set 相互独立
+# set-a 跨两台机器（207 提供 webapi，145 消费），依赖边跨节点，
+# 所以 COMMIT 必须整 set 推进，不能按节点各自为政。
+# ─────────────────────────────────────────────────────────────
+sets:
+  set-a: [172.16.1.207, 172.16.1.145]
+  set-b: [172.16.2.98]
+  set-c: [172.16.1.149]

@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vcsNode · 集群管理</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">vcs</span><span class="brand-name">Node</span>
+    <span class="proto-badge mock" id="dataMode">演示数据</span>
+    <span class="proto-badge mock" id="nodeMode" title="节点状态来自各机 agent 上报；灰色为未连上">节点数据 · 演示</span>
+  </div>
+
+  <div class="cluster-summary" id="clusterSummary"></div>
+
+  <div class="topbar-right">
+    <span class="clock" id="clock"></span>
+    <span class="avatar">运维</span>
+  </div>
+</header>
+
+<div class="shell">
+  <nav class="side">
+    <button class="nav-item active" data-view="overview">
+      <span class="nav-dot"></span>总览
+      <span class="nav-badge" id="navAlertBadge">2</span>
+    </button>
+    <button class="nav-item" data-view="pending">
+      <span class="nav-dot"></span>待发布区
+      <span class="nav-badge" id="navPendingBadge">94</span>
+    </button>
+    <button class="nav-item" data-view="releases">
+      <span class="nav-dot"></span>发布记录
+    </button>
+    <button class="nav-item" data-view="config">
+      <span class="nav-dot"></span>配置
+      <span class="nav-badge warn" id="navDriftBadge">1</span>
+    </button>
+    <button class="nav-item" data-view="events">
+      <span class="nav-dot"></span>事件
+    </button>
+
+    <div class="side-foot">
+      <div class="side-foot-row"><span>主节点</span><b>172.16.2.98</b></div>
+      <div class="side-foot-row"><span>配置版本</span><b>rev 7</b></div>
+      <div class="side-foot-row"><span>协议</span><b>proto 1</b></div>
+    </div>
+  </nav>
+
+  <main class="main">
+
+    <!-- ══════════════ 总览 ══════════════ -->
+    <section class="view active" id="view-overview">
+      <div class="view-head">
+        <h1>总览</h1>
+        <p class="sub">四台机器的组件状态。状态由主节点判定，成员只上报观测值。</p>
+      </div>
+
+      <div class="node-cards" id="nodeCards"></div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>组件矩阵</h2>
+          <div class="legend" id="stateLegend"></div>
+        </div>
+        <div class="matrix-wrap">
+          <table class="matrix" id="matrix"></table>
+        </div>
+        <div class="panel-foot">
+          <span class="muted">点格子看详情并启停组件。虚线格表示该节点不部署此组件。</span>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-head"><h2>待处理</h2></div>
+          <ul class="queue-list" id="queueList"></ul>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>最近事件</h2><a class="link" data-view="events">全部</a></div>
+          <ul class="event-mini" id="eventMini"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════ 待发布区 ══════════════ -->
+    <section class="view" id="view-pending">
+      <div class="view-head">
+        <h1>待发布区</h1>
+        <p class="sub">扫描 98 的部署目录，与上一版比对。这是草稿，勾选后才进入发布。</p>
+      </div>
+
+      <div class="scan-bar">
+        <div class="scan-meta">
+          <div><span class="muted">基线</span> <b id="scanBase">—</b></div>
+          <div><span class="muted">本次</span> <b class="accent" id="scanId">—</b></div>
+          <div><span class="muted">扫描于</span> <b id="scanAt">—</b></div>
+          <div><span class="muted">扫描源</span> <b id="scanSrc">—</b></div>
+        </div>
+        <div class="scan-actions">
+          <button class="btn ghost" id="btnRescan">重新扫描</button>
+        </div>
+      </div>
+
+      <div id="pendingNotice"></div>
+
+      <div class="draft-layout">
+        <div class="draft-main">
+          <div class="comp-chips" id="compChips"></div>
+
+          <div class="empty-state" id="pendingEmpty" hidden>
+            <div class="es-title">还没有可发布的变更</div>
+            <div class="es-text">点右上角「重新扫描」。第一次扫描会建立基线，之后每次扫描显示相对基线的改动。</div>
+          </div>
+
+          <div class="panel" id="filePanel">
+            <div class="panel-head">
+              <h2>变更清单</h2>
+              <div class="head-tools">
+                <label class="check-inline"><input type="checkbox" id="selectAll" checked> 全选</label>
+                <span class="muted" id="selCount"></span>
+              </div>
+            </div>
+            <div class="filelist" id="fileList"></div>
+          </div>
+        </div>
+
+        <aside class="draft-side">
+          <div class="panel sticky">
+            <div class="panel-head"><h2>发布影响</h2></div>
+            <dl class="kv" id="impactKv"></dl>
+
+            <div class="confirm-block">
+              <div class="confirm-title">发布前确认</div>
+              <label class="check-row">
+                <input type="checkbox" id="ckDb">
+                <span>本次不含数据库结构变更<br><span class="muted small">（新增 DbSet / 建表需人工执行，vcsNode 不做）</span></span>
+              </label>
+              <label class="check-row danger">
+                <input type="checkbox" id="ckDel" disabled>
+                <span>我已确认 <b id="delCount">3</b> 个删除项<br><span class="muted small">删除不可逆，执行前会备份到成员本地 <code class="inline">backup\&lt;relId&gt;\</code></span></span>
+              </label>
+            </div>
+
+            <div class="side-actions">
+              <button class="btn primary" id="btnStage" disabled>预发布</button>
+              <button class="btn" id="btnCommit" disabled title="预发布全部成功后才可切换">切换上线</button>
+            </div>
+            <p class="hint">预发布只覆盖文件，组件必须已停止（否则会 409 拒绝）；改完再去组件抽屉里启动。
+              「切换上线」（停止→覆盖→启动一键）还没接，在 M3。</p>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ══════════════ 发布记录 ══════════════ -->
+    <section class="view" id="view-releases">
+      <div class="view-head">
+        <h1>发布记录</h1>
+        <p class="sub">每一版在各节点的落地状态。回退按 set 整体进行。</p>
+      </div>
+      <div class="panel">
+        <div class="table-wrap">
+          <table class="table" id="releaseTable"></table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════ 配置 ══════════════ -->
+    <section class="view" id="view-config">
+      <div class="view-head">
+        <h1>配置</h1>
+        <p class="sub">三层：组件默认 → 节点覆盖 → 本机引导（不下发）。路径四台不统一，逐台填。</p>
+      </div>
+
+      <div class="layer-cards">
+        <div class="layer-card">
+          <div class="layer-no">①</div>
+          <div><b>组件默认</b><p>怎么启停、怎么判活、默认端口</p></div>
+        </div>
+        <div class="layer-card">
+          <div class="layer-no">②</div>
+          <div><b>节点覆盖</b><p>该机 localRoot / 端口 / 是否启用 / 共享路径</p></div>
+        </div>
+        <div class="layer-card disabled">
+          <div class="layer-no">③</div>
+          <div><b>本机引导</b><p>只在本机文件里，永不下发</p></div>
+        </div>
+      </div>
+
+      <div class="drift-banner" id="driftBanner">
+        <b>配置漂移</b> <span id="driftText"></span>
+        <button class="btn tiny ghost" data-view="events">查看</button>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>节点覆盖</h2>
+          <div class="head-tools">
+            <span class="cfg-dirty" id="cfgDirty"></span>
+            <button class="btn ghost" id="btnCfgUndo" hidden>撤销</button>
+            <button class="btn ghost" id="btnProbe">探测全部节点</button>
+            <button class="btn primary" id="btnSaveConfig" disabled>保存配置</button>
+          </div>
+        </div>
+        <div class="matrix-wrap">
+          <table class="config-table" id="configTable"></table>
+        </div>
+        <div class="panel-foot">
+          <span class="muted" id="cfgHint">「探测」会在该机上真实检查路径是否存在、共享是否可读、端口是否被占。保存前会列出逐条 diff。</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════ 事件 ══════════════ -->
+    <section class="view" id="view-events">
+      <div class="view-head">
+        <h1>事件</h1>
+        <p class="sub">所有指令与状态变化的审计流水，落盘为按天切分的 jsonl。</p>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>最近 200 条</h2>
+          <div class="head-tools">
+            <select class="select" id="eventFilter">
+              <option value="">全部节点</option>
+              <option>98</option><option>207</option><option>145</option><option>149</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="eventTable"></table>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- 右侧详情抽屉 -->
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <div>
+      <h2 id="drawerTitle">—</h2>
+      <p class="muted small" id="drawerSub"></p>
+    </div>
+    <button class="icon-btn" id="drawerClose">✕</button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+</aside>
+<div class="scrim" id="scrim"></div>
+
+<!-- 弹层 -->
+<div class="modal" id="modal" aria-hidden="true">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2 id="modalTitle">—</h2>
+      <button class="icon-btn" id="modalClose">✕</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-foot" id="modalFoot"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

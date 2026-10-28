@@ -1,0 +1,40 @@
+{
+  "_comment": [
+    "vcsNode 本机引导配置（第 ③ 层，永不被主节点下发覆盖）。",
+    "每台成员机器手写一次，放在 C:\\vcsNode\\agent.bootstrap.json。",
+    "只含 7 个字段：主节点怎么找、我是谁、怎么鉴权、状态存哪、允不允许执行启停、服务日志放哪、旧文件备份放哪。",
+    "其余一切（有哪些组件、装在哪、共享目录在哪）由主节点下发。",
+    "改这个文件需要重启 agent 生效。"
+  ],
+
+  "master": "172.16.2.98:47821",
+  "nodeId": "node-145",
+  "secret": "REPLACE_WITH_THE_SAME_SECRET_AS_MASTER",
+  "cacheDir": "C:\\vcsNode\\state",
+
+  "_allowControl": [
+    "false / 不写 = 只读：收到 task 一律回 nack control_disabled，一个进程都不动。",
+    "true        = 允许执行「启动 / 停止 / 重启」指令，以及「更新文件」（stage：会覆盖本机文件）。",
+    "把这里改成 true 之前，先确认这台机器上 agent 用的是 vcsnode 账号、",
+    "而且是本地管理员组成员 —— 否则停不掉别人启动的业务进程。"
+  ],
+  "allowControl": false,
+
+  "_logDir": [
+    "服务自己的 stdout/stderr 写到这里，每个组件一个 <组件>.log。",
+    "不写 = cacheDir 的上一级 + \\logs（如 C:\\vcsNode\\state → C:\\vcsNode\\logs）。"
+  ],
+  "logDir": "C:\\vcsNode\\logs",
+
+  "_backupDir": [
+    "「更新文件」覆盖/删除之前的旧文件备份到这里：<backupDir>\\<relId>\\<组件>\\<相对路径>。",
+    "不写 = cacheDir 的上一级 + \\backup（如 C:\\vcsNode\\state → C:\\vcsNode\\backup）。",
+    "回退就是把这里的文件拷回去 —— 所以别和 state 放同一个盘符下的小分区。"
+  ],
+  "backupDir": "C:\\vcsNode\\backup",
+
+  "_optional": {
+    "insecureSkipVerify": false,
+    "_note": "仅调试用。生产环境必须校验主节点证书/HMAC 签名。"
+  }
+}
