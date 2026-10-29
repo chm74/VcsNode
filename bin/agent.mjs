@@ -41,7 +41,7 @@ import { createEventLog } from '../src/event-log.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-const AGENT_VERSION = '0.1.3-m2';
+const AGENT_VERSION = '0.1.4-m2';
 const DEFAULT_SAMPLE_MS = 10_000;
 const HEARTBEAT_MS = 30_000;      // 没变化也每 30s 报一次，主节点才知道「还活着」
 const READ_TIMEOUT_MS = 45_000;   // 这么长时间没收到任何字节 → 判定链路死了

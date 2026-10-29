@@ -140,16 +140,18 @@ Get-NetTCPConnection -LocalPort 47821 -State Listen
 
 每台机器做同样的事，只有 `nodeId` 不同。
 
-### 6.1 agent 只需要 6 个文件
+### 6.1 agent 只需要 8 个程序文件
 
 M0 的 agent 是纯只读的，**不需要整目录**。M1 加了启停（`src\proc.mjs`），
-M2 加了「更新文件」（`src\sync.mjs`），程序部分一共 6 个文件、约 73 KB：
+M2 加了「更新文件」（`src\sync.mjs`），再加上事件流水及 Windows .NET 启动桥，程序部分一共 8 个文件：
 
 ```
 C:\vcsNode\
   bin\agent.mjs          27.5 KB   ← SSE 常驻 + 采样上报 + 执行启停 / 更新文件
   src\probe.mjs          17.4 KB   ← 读进程表 / 端口 / 连接，按 identify 认进程
   src\proc.mjs           14.6 KB   ← 认真实 pid、taskkill /T /F、start（cwd + 日志 + 等就绪）、重启
+  src\win-console.mjs                ← Windows dotnet 隐藏控制台启动桥
+  src\event-log.mjs                  ← 本机事件 / 启停流水
   src\sync.mjs            8.3 KB   ← M2：按 manifest 备份 + 校验 sha256 + 就地覆盖/删除
   src\agent-auth.mjs      4.1 KB   ← HMAC 签名（与主节点同一份实现）
   src\state.mjs           1.1 KB   ← 原子写 JSON
@@ -170,11 +172,11 @@ C:\vcsNode\
 文件清单由共享上的 `manifest.json` 给（协议 §4.2）。
 
 从 98 拉取（98 上把 vcsNode 放到 `\\172.16.2.98\Tools\_vcs\dist\vcsNode\`）。
-**只拷这 6 个文件**，别整目录拷 —— 否则 `ui\`、`bin\master.mjs` 也会落到成员上：
+**只拷这 8 个程序文件**，别整目录拷 —— 否则 `ui\`、`bin\master.mjs` 也会落到成员上：
 
 ```powershell
 robocopy \\172.16.2.98\Tools\_vcs\dist\vcsNode C:\vcsNode `
-  bin\agent.mjs src\probe.mjs src\proc.mjs src\sync.mjs src\agent-auth.mjs src\state.mjs `
+  bin\agent.mjs src\probe.mjs src\proc.mjs src\sync.mjs src\agent-auth.mjs src\state.mjs src\event-log.mjs src\win-console.mjs `
   /R:2 /W:2
 ```
 
@@ -224,7 +226,7 @@ chcp 65001                                    # 中文乱码时先切 UTF-8 代�
 正常输出：
 
 ```
-10:12:05 [agent] vcsNode agent 0.1.3-m2  node=node-149  master=172.16.2.98:47821  pid=5320
+10:12:05 [agent] vcsNode agent 0.1.4-m2  node=node-149  master=172.16.2.98:47821  pid=5320
 10:12:05 [agent] 采样间隔 10000ms · 心跳 30000ms · 缓存 C:\vcsNode\state
 10:12:05 [agent] 服务日志 C:\vcsNode\logs\<组件>.log
 10:12:05 [agent] 旧文件备份 C:\vcsNode\backup\<relId>\<组件>\<相对路径>
@@ -455,7 +457,7 @@ schtasks /End /TN vcsNodeAgent
 
 # 2. 覆盖程序，但保留配置与状态
 #    master(98)：bin\ src\ ui\ tools\
-#    agent(成员)：只覆盖 §6.1 那 6 个文件（整目录拷会把 master 的代码带上去）
+#    agent(成员)：只覆盖 §6.1 那 8 个程序文件（整目录拷会把 master 的代码带上去）
 #    不能动：config\  state\  logs\  backup\
 robocopy C:\vcsNode-new C:\vcsNode /E /XD config state logs backup
 
@@ -775,6 +777,7 @@ curl "http://127.0.0.1:47821/api/ui/actions?node=149&component=shp_buildings&act
 | `stage` 报 `layout_mismatch` | `sources.<组件>` 与 98 的 `localRoot` 是否同一个目录 | 扫描源指向源码目录，M2 不允许把源码铺进同步目录 |
 | `stage` 报 `partial` 且错误是 `EPERM`/`EBUSY` | 目标组件是不是又被起起来了 | 先停服务再发；已落地的文件不用重做 |
 | 组件起不来，日志报找不到配置 | 启动 cwd | `appsettings.json` 不在 cwd；见 `architecture.md` §3.5 |
+| GenerateClient / GenerateTool 立即退出，栈在 `SetConsoleOutputEncoding` | 成员 agent 是否已升级到 0.1.4-m2，`src\win-console.mjs` 是否就位 | 旧版 detached 启动没有有效控制台；见 §10.3 |
 | 组件起来了但客户端不在线 | `SignalRUrl` | 指向了不存在的 webapi（145 指向自己就是典型） |
 | 启停报「30000ms 内没等到…就绪（端口 X 还没监听）」，但应用日志已 `Application started` | 应用日志里的 `Now listening on` | 配置 `port` ≠ 应用真实端口（被 `Kestrel:Endpoints` 改的），见 §10.2 |
 | 端口被占 | `Get-NetTCPConnection -LocalPort <port>` | 上次没杀干净，标 `orphan` |
@@ -829,6 +832,37 @@ Now listening on: http://127.0.0.1:7080     ← 配置里 port 就写 7080
 > 排查顺序：**日志里的 `Now listening on` → 配置里的 `port` → 两者对齐**，不要去猜。
 
 ---
+
+### 10.3 Windows .NET 后台启动立即退出
+
+日志出现 `System.IO.IOException → SetConsoleOutputEncoding → Program.Main`，且退出码为
+`3762504530` 时，先确认成员 agent 的版本。旧版直接使用 `detached: true` 启动 `dotnet`，
+Windows 的 `DETACHED_PROCESS` 会使业务进程没有可用控制台；GenerateClient / GenerateTool
+入口的编码设置因此失败。这发生在业务配置读取和 SignalR 连接之前。
+
+从 agent **0.1.4-m2** 起，Windows `dotnet` 进程由 `src\win-console.mjs` 用
+`CREATE_NEW_CONSOLE + SW_HIDE` 启动：有有效控制台，窗口隐藏，标准输出和错误直接写原组件日志。
+启动桥返回真实业务 PID 并转交退出码；停止仍按真实 PID 执行 `taskkill /T /F`，
+重启仍先停后起。agent 退出后业务进程继续运行。
+
+升级已有 149 成员时，在停止该机 **vcsNode agent** 后，从本次修复包定点覆盖三个文件：
+
+```powershell
+$packageRoot = '\\172.16.2.98\Tools\_vcs\dist\vcsNode'  # 放有本次修复文件的目录
+$agentRoot = 'C:\vcsNode'                              # 改成该成员的实际 vcsNode 目录
+foreach ($relativePath in @('bin\agent.mjs', 'src\proc.mjs', 'src\win-console.mjs')) {
+  Copy-Item -LiteralPath (Join-Path $packageRoot $relativePath) -Destination (Join-Path $agentRoot $relativePath) -Force
+}
+```
+
+再按该机原来的计划任务或服务方式启动 agent。页面应显示 `agent 0.1.4-m2`；
+依次启动 GenerateClient / GenerateTool，检查 PID、组件日志及到 webapi 的连接。
+无需覆盖业务 DLL、源码、`appsettings.json` 或 `agent.bootstrap.json`。
+
+本次同时核对了业务仓库中的入口：WorkerHost 未主动设置控制台编码；McpServer 使用标准
+日志及 HTTP 宿主，未发现同样的编码设置。二者的 `dotnet` 启动也自动使用兼容路径。
+若仍退出，应按实际日志判断：WorkerHost 检查模块启用及其配置；McpServer 检查
+`--transport http`、端口（149 配置为 7081）和 HTTP 鉴权配置，不应把其他启动异常归为编码问题。
 
 ## 11. 文件位置
 

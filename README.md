@@ -101,12 +101,13 @@ node bin/master.mjs --sample-interval 15000 --offline-ms 45000
 
 ### 3.2 成员 agent（207 / 145 / 149）
 
-成员**只需要 6 个文件**（约 73 KB），不要整目录拷：
+成员**只需要 8 个程序文件**，不要整目录拷：
 
 ```
 C:\vcsNode\
   bin\agent.mjs
   src\probe.mjs  src\proc.mjs  src\sync.mjs  src\agent-auth.mjs  src\state.mjs
+  src\event-log.mjs  src\win-console.mjs
   agent.bootstrap.json      ← 本机唯一手写的文件
   state\                    ← 运行时自动建
   logs\                     ← 服务 stdout/stderr，每组件一个 <组件>.log
@@ -115,7 +116,7 @@ C:\vcsNode\
 
 ```powershell
 robocopy \\172.16.2.98\Tools\_vcs\dist\vcsNode C:\vcsNode `
-  bin\agent.mjs src\probe.mjs src\proc.mjs src\sync.mjs src\agent-auth.mjs src\state.mjs `
+  bin\agent.mjs src\probe.mjs src\proc.mjs src\sync.mjs src\agent-auth.mjs src\state.mjs src\event-log.mjs src\win-console.mjs `
   /R:2 /W:2
 
 copy C:\vcsNode\config\agent.bootstrap.example.json C:\vcsNode\agent.bootstrap.json
@@ -153,6 +154,15 @@ node C:\vcsNode\bin\agent.mjs --remap D:\Deploy=E:\tmp\fake
 ```
 
 > 第一次上机先跑 `--inventory`，用真实的 `cwd` / `ExecutablePath` 回填配置页的 `localRoot` / `port`。
+
+**Windows .NET 启动兼容（agent 0.1.4-m2）**：`dotnet` 组件通过隐藏控制台启动，
+避免 GenerateClient / GenerateTool 设置 `Console.OutputEncoding` 时因没有控制台而立即退出。
+工作目录仍取 `localRoot + start.cwd`，日志仍写 `logs\<组件>.log`，启停和退出审计使用真实业务 PID。
+不需要修改或重新编译业务程序；WorkerHost、McpServer 等 `dotnet` 组件也使用该启动路径。
+
+升级已有成员时，覆盖 `bin\agent.mjs`、`src\proc.mjs`，并新增 `src\win-console.mjs`，
+然后重启该机 vcsNode agent。只更新主节点不会改变成员的启动方式。现场验收与检查见
+[`docs/runbook.md` §10.3](docs/runbook.md#103-windows-net-后台启动立即退出)。
 
 ### 3.3 命令行扫描
 
@@ -255,6 +265,7 @@ vcsNode/
 │   ├── node-state.mjs      观测 → 结论（running / stopped / crashed / orphan / degraded …）
 │   ├── nodes.mjs           节点注册表 + SSE 通道 + 落盘 + sendTask
 │   ├── proc.mjs            认 pid、taskkill /T /F、spawn detached、等就绪、重启
+│   ├── win-console.mjs     Windows dotnet 隐藏控制台启动、真实 PID 和退出回传
 │   ├── agent-auth.mjs      两端共用 HMAC-SHA256（时间窗 + nonce 防重放）
 │   ├── event-log.mjs       事件流水（JSONL，保留 30 天）
 │   └── state.mjs           原子写 JSON（临时文件 + rename）
@@ -396,3 +407,10 @@ vcsNode/
 | 一套 | set | 事务边界，如 `set-a = 207 + 145` |
 | 假活 | `degraded` | 进程在，但没连上 webapi（SignalR 断） |
 | 忙 | `busy` | 正在跑生成任务，此时禁止停/重启/切换 |
+
+## 11. 启动回归验证
+
+Windows 上安装可构建 .NET 8 的 SDK 和 .NET 8 运行时后，运行 `node --test`。
+测试使用独立的临时 .NET 程序复现控制台编码异常，验证隐藏窗口、参数/目录/环境/日志、
+真实 PID 停止与重启、端口释放，以及 agent 退出后业务进程继续运行。不会启动实际生成服务；
+测试结束后清理模拟进程及临时文件。

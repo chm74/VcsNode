@@ -13,8 +13,9 @@
 import { execFile, spawn } from 'node:child_process';
 import { closeSync, mkdirSync, openSync, readFileSync, statSync, writeSync } from 'node:fs';
 import { connect } from 'node:net';
-import { delimiter, dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { readInventory, locate, applyRemap, resolveStartCwd } from './probe.mjs';
+import { spawnWindowsConsole } from './win-console.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const IS_WIN = process.platform === 'win32';
@@ -296,16 +297,20 @@ export async function startComponent(spec, component, { logDir, remaps = [], wai
 
   let child;
   try {
-    child = spawn(spawnCmd, spawnArgs, {
-      cwd,
-      env,
-      detached: true,          // 服务不能跟着 agent 一起死
-      windowsHide: true,
-      stdio: ['ignore', fd, fd],
-    });
+    // .NET 控制台程序可能在 Main 中设置编码。detached 会让它没有控制台，
+    // 因此通过隐藏控制台启动桥启动；其余命令保留原来的直接启动方式。
+    child = IS_WIN && /^dotnet(?:\.exe)?$/i.test(basename(cmdPath))
+      ? await spawnWindowsConsole(spawnCmd, spawnArgs, { cwd, env, logFd: fd, timeoutMs: Math.min(timeoutMs, 15000) })
+      : spawn(spawnCmd, spawnArgs, {
+        cwd,
+        env,
+        detached: true,          // 服务不能跟着 agent 一起死
+        windowsHide: true,
+        stdio: ['ignore', fd, fd],
+      });
   } catch (e) {
-    closeSync(fd);
-    return done({ ok: false, code: 'spawn_failed', message: `起不来：${e.message}`, cwd, cmdline });
+    const tail = logTail(logFile);
+    return done({ ok: false, code: 'spawn_failed', message: `起不来：${e.message}${tail ? `\n${tail}` : ''}`, cwd, cmdline, logFile });
   } finally {
     // 子进程已经拿到句柄副本，父进程这份可以关了
     try { if (fd !== null) closeSync(fd); } catch { /* 已经关了 */ }
