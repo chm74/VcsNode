@@ -1915,6 +1915,98 @@ function actTime(e) {
   return ts ? `${ts.slice(5, 10)} ${ts.slice(11, 19)}` : '—';
 }
 
+/* 失败码 → 人话。只解释「为什么没做成 / 为什么这是失败的」，不猜业务原因。 */
+const ACT_CODE_HINT = {
+  busy: '成员上一条指令还没执行完（或正在跑长任务），这次指令没有执行。稍后重试。',
+  control_disabled: '本机 bootstrap 没有 allowControl: true，agent 处于只读模式，拒绝执行。',
+  not_running: '要停的进程本来就不在，这条指令没有产生副作用。',
+  not_ours: '按 identify 找不到「自己的」进程，agent 拒绝操作（避免杀错）。',
+  identify_mismatch: '端口上的进程命令行对不上，agent 不敢停。核对 identify / 端口配置。',
+  bad_cwd: '启动目录不存在（localRoot + start.cwd），agent 没有在错误目录里启动。',
+  port_busy: '端口被别的进程占着，agent 没有动它。',
+  exited: '进程启动后立刻退出，去成员上看组件日志（logDir\\<组件>.log）找原因。',
+  start_timeout: '等进程被认出来 / 端口监听超时；进程可能没起来，也可能 identify 配错。',
+  partial: '部分文件没落成。已落地的不会自动回滚，未完成的部分仍留在待同步区。',
+  manifest_missing: '共享上找不到 manifest.json：共享没挂上，或 agent 没有读权限。',
+  layout_mismatch: '扫描源和 98 实际运行目录不是同一个，就地覆盖会写错地方，必须先改 sources。',
+  node_offline: '目标机控制面不在线，指令没有发出去。',
+  task_timeout: '成员在超时时间内没有回执；指令可能已经执行，先看节点状态再重试。',
+};
+
+function actCodeHint(e) {
+  const code = String(e.code || '');
+  if (!code) return '';
+  if (ACT_CODE_HINT[code]) return ACT_CODE_HINT[code];
+  if (code.startsWith('exit_')) {
+    return `进程自己退出（退出码 ${code.slice(5)}），不是 vcsNode 停的；按组件日志排查崩溃原因。`;
+  }
+  return '';
+}
+
+/** 启停记录详情：整条记录原样展开，不截断说明 */
+function openActionDrawer(idx) {
+  const e = ACT_ROWS[idx];
+  if (!e) return;
+
+  const kind = ACT_KIND_LABEL[e.action] || e.action || '—';
+  const ok = e.result !== 'fail';
+  const note = e.message || e.code || '—';
+  const when = e.ts ? `${e.ts.slice(0, 10)} ${e.ts.slice(11, 19)}` : '—';
+  const hint = ok ? '' : actCodeHint(e);
+  const relId = e.action === 'stage'
+    ? (String(e.message || '').match(/^(rel-[A-Za-z0-9-]+)/) || [])[1]
+    : null;
+  const comp = e.component || (e.action === 'stage' ? '整个同步包（多组件）' : '—');
+
+  const overview = `
+    <div class="drawer-section">
+      <h3>这次操作</h3>
+      <dl class="kv">
+        <dt>结果</dt><dd>${chip(ok ? 'running' : 'crashed', ok ? '成功' : '失败')}</dd>
+        <dt>动作</dt><dd>${cfgEsc(kind)}</dd>
+        <dt>节点</dt><dd class="mono">${cfgEsc(e.node || '—')}</dd>
+        <dt>组件</dt><dd class="mono">${cfgEsc(comp)}</dd>
+        <dt>时间</dt><dd class="mono">${cfgEsc(when)}</dd>
+        <dt>耗时</dt><dd class="mono">${e.durationMs === null || e.durationMs === undefined ? '—' : fmtDurMs(e.durationMs)}</dd>
+        <dt>PID</dt><dd class="mono">${e.pid ?? '—'}</dd>
+        ${e.code ? `<dt>错误码</dt><dd class="mono">${cfgEsc(e.code)}</dd>` : ''}
+      </dl>
+    </div>`;
+
+  const detail = `
+    <div class="drawer-section">
+      <h3>说明（完整）</h3>
+      <p class="act-detail">${cfgEsc(note)}</p>
+    </div>`;
+
+  const why = hint ? `
+    <div class="drawer-section">
+      <h3>为什么失败</h3>
+      <p class="act-detail ${ok ? '' : 'is-fail'}">${cfgEsc(hint)}</p>
+    </div>` : '';
+
+  const related = `
+    <div class="drawer-section">
+      <h3>关联</h3>
+      <dl class="kv">
+        <dt>指令</dt><dd class="mono">${cfgEsc(e.taskId || '—')}</dd>
+        <dt>记录</dt><dd class="mono act-id">${cfgEsc(e.id || '—')}</dd>
+      </dl>
+      ${relId ? `<div class="drawer-actions"><button class="btn tiny" data-release="${cfgEsc(relId)}">查看同步记录 ${cfgEsc(relId)}</button></div>` : ''}
+      <p class="muted small" style="margin:10px 0 0">
+        数据来自成员本机台账 <code class="inline">logs\\actions-YYYYMMDD.jsonl</code>，
+        上报后汇总到 98 的 <code class="inline">state\\actions\\</code>，保留最近 ${ACT_DAYS} 天。
+        ${e.taskId ? '「指令」可以用来和事件页的 task / ack / nack 对上。' : ''}
+      </p>
+    </div>`;
+
+  $('#drawerTitle').textContent = `${kind} · ${comp}`;
+  $('#drawerSub').textContent = `${e.node || '—'} · ${when} · ${ok ? '成功' : '失败'}`;
+  $('#drawerBody').innerHTML = overview + detail + why + related;
+  $('#drawer').classList.add('open');
+  $('#drawer').setAttribute('aria-hidden', 'false');
+}
+
 /** 顶部四张统计卡 */
 function renderActionStats() {
   const v = (id, text) => { const el = $(id); if (el) el.textContent = text; };
@@ -1966,7 +2058,7 @@ function renderActions() {
       <tbody><tr><td colspan="8"><p class="muted small" style="margin:18px 0">${why}</p></td></tr></tbody>`;
   } else {
     $('#actionTable').innerHTML = `${head}
-      <tbody>${ACT_ROWS.map((e) => {
+      <tbody>${ACT_ROWS.map((e, i) => {
         const kind = ACT_KIND_LABEL[e.action] || e.action || '—';
         const ok = e.result !== 'fail';
         const note = e.message || e.code || (ok && e.pid ? `pid ${e.pid}` : '—');
@@ -1979,7 +2071,9 @@ function renderActions() {
           <td>${chip(ok ? 'running' : 'crashed', ok ? '成功' : '失败')}</td>
           <td class="mono">${e.durationMs === null || e.durationMs === undefined ? '—' : `${Number(e.durationMs)} ms`}</td>
           <td class="mono">${e.pid ?? '—'}</td>
-          <td class="trunc" title="${cfgEsc(note)}">${cfgEsc(note)}</td>
+          <td class="trunc"><button class="act-note" data-action-idx="${i}" title="点击查看详情">
+            <span class="act-note-text">${cfgEsc(note)}</span><span class="act-note-more">详情</span>
+          </button></td>
         </tr>`;
       }).join('')}</tbody>`;
   }
@@ -2053,6 +2147,9 @@ document.addEventListener('click', (e) => {
 
   const rel = e.target.closest('[data-release]');
   if (rel) { openReleaseDrawer(rel.dataset.release); return; }
+
+  const actNote = e.target.closest('[data-action-idx]');
+  if (actNote) { openActionDrawer(Number(actNote.dataset.actionIdx)); return; }
 
   if (e.target.closest('[data-toast]')) {
     toast(e.target.closest('[data-toast]').dataset.toast);

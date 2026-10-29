@@ -751,6 +751,23 @@ table.matrix thead th:first-child { background: #fbfcfe; }
 /* 长说明列：一行截断，悬停看全文 */
 .table td.trunc { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* 启停记录：点「说明」打开详情抽屉 */
+.act-note {
+  display: flex; align-items: baseline; gap: 8px;
+  width: 100%; max-width: 420px; padding: 0; border: 0; background: none;
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+.act-note-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.act-note-more { flex: none; color: var(--brand); font-size: 11.5px; opacity: .55; }
+.act-note:hover .act-note-text { color: var(--brand); text-decoration: underline; }
+.act-note:hover .act-note-more { opacity: 1; }
+.act-note:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: 4px; }
+
+/* 启停详情：说明保留换行，长 id 不撑破抽屉 */
+.act-detail { margin: 0; font-size: 12.5px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+.act-detail.is-fail { color: var(--err); }
+.act-id { word-break: break-all; }
+
 /* 启停记录：顶部统计 */.stat-row {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 12px; margin-bottom: 14px;
