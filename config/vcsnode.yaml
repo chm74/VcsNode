@@ -519,17 +519,17 @@ nodes:
       # TODO web / webapi 的确切目录未确认，留 null 待第 1 步采样（cwd + ExecutablePath）填充。
       #      父目录已知是 D:\Digihail\SceneAutoApply，但子目录名不能猜。
       web:
-        localRoot: null
+        localRoot: 'C:\SceneAutoApply\Program\nginx-1.23.1\html\SceneAutoApply'
         port: 3071                  # 生产前端端口
       webapi:
-        localRoot: null
+        localRoot: 'D:\SceneAutomationWorker\Releases\main-test\SceneAutoApply'
       # 207 现在只同步 web + webapi；Tools 路径已确认，但暂不纳管（要不要同步到这里待定）。
       tools:
         enabled: false
         localRoot: 'D:\Digihail\SceneAutoApply\Tools'
       # McpServer 子目录名未确认（父目录 D:\Digihail\SceneAutoApply 已确认）
       mcpserver:
-        localRoot: null
+        localRoot: 'D:\SceneAutomationWorker\Releases\main-test\SceneAutoApply.McpServer'
 
   172.16.1.145:
     id: node-145
@@ -546,13 +546,13 @@ nodes:
     # 145 上应写 http://172.16.1.207:3601/chatHub，否则客户端会「进程活着但注册不上」。
     components:
       generateclient:
-        localRoot: 'D:\SceneAutomationV3\GenerateClient'
+        localRoot: 'D:\SceneAutomationWork\Releases\main-test\GenerateClient'
         health:                     # 145 的客户端连的是 207 的 webapi
           type: connection
           remoteHost: 172.16.1.207
           remotePort: 3601
       generatetool:
-        localRoot: 'D:\SceneAutomationV3\GenerateTool'
+        localRoot: 'D:\SceneAutomationWork\Releases\main-test\GenerateTool'
         health:
           type: connection
           remoteHost: 172.16.1.207
@@ -561,7 +561,7 @@ nodes:
       shp_plants:     { localRoot: 'D:\SceneAutomationV3\Tools\ShapefileTool.Plants.20230905' }
       shp_buildings:  { localRoot: 'D:\SceneAutomationV3\Tools\ShapefileTool.Buildings.20230905' }
       workerhost:
-        localRoot: 'D:\SceneAutomationV3\WorkerHost'
+        localRoot: 'D:\SceneAutomationWork\Releases\main-test\SceneAutomation.WorkerHost'
         health:                     # 145 没有 webapi，连 207
           type: connection
           remoteHost: 172.16.1.207
