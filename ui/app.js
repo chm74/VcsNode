@@ -762,6 +762,7 @@ function renderPending() {
       : '';
     return `
     <div class="group-row">
+      <input type="checkbox" class="gall" data-gall="${g.component}" title="全选 ${g.component} 的 ${g.files.length} 个文件">
       <span class="caret">▾</span>
       <span>${g.component}</span>
       <span class="gpath" title="${g.root}">${g.root}</span>
@@ -801,6 +802,15 @@ function refreshPendingState() {
   $('#selCount').title = VIEW.stats ? `受管 ${VIEW.stats.tracked} 个文件，未变 ${VIEW.stats.unchanged} 个` : '';
   $('#selectAll').checked = all.length > 0 && sel.length === all.length;
   $('#delCount').textContent = String(dels.length);
+
+  // 组件标题前的「全选」：全勾 = 勾上，部分勾 = 半选
+  $$('#fileList [data-gall]').forEach((box) => {
+    const g = VIEW.groups.find((x) => x.component === box.dataset.gall);
+    if (!g || !g.files.length) return;
+    const n = g.files.filter((f) => f.sel).length;
+    box.checked = n === g.files.length;
+    box.indeterminate = n > 0 && n < g.files.length;
+  });
 
   const ckDel = $('#ckDel');
   ckDel.disabled = dels.length === 0;
@@ -1072,7 +1082,7 @@ function stageSelected() {
         还在运行的组件会被拒绝 —— 先在抽屉里停止。
       </p>`,
     confirmText: '开始更新',
-    onConfirm: () => doStage({ comps, paths, includeDeletes: dels > 0, nodes: targets, skipped, count: sel.length }),
+    onConfirm: () => doStage({ comps, paths, includeDeletes: dels > 0, targetNodes: targets, skipped, count: sel.length }),
   });
 }
 
@@ -2189,6 +2199,17 @@ document.addEventListener('change', (e) => {
 
   if (t.id === 'selectAll') {
     VIEW.groups.forEach(g => g.files.forEach(f => { f.sel = t.checked; }));
+    rerenderKeepScroll();
+    return;
+  }
+
+  // 组件标题前的「全选」：勾/取消这一组的全部文件（删除项仍需在右侧单独确认）
+  if (t.dataset && t.dataset.gall !== undefined) {
+    const g = VIEW.groups.find((x) => x.component === t.dataset.gall);
+    if (!g) return;
+    g.files.forEach((f) => { f.sel = t.checked; });
+    const anyDel = VIEW.groups.some((o) => o.files.some((x) => x.action === 'D' && x.sel));
+    if (!anyDel) $('#ckDel').checked = false;
     rerenderKeepScroll();
     return;
   }
