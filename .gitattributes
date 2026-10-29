@@ -1,0 +1,17 @@
+# 统一行尾：仓库内一律 LF，检出到工作区也是 LF。
+# 这样 Windows 编辑器把整篇存成 CRLF 时，git add 会自动归一化成 LF，
+# 不会再把每一行都算作改动（历史上出现过整文件 400+ 行的假 diff）。
+* text=auto eol=lf
+
+# 明确二进制类型，避免被当文本归一化破坏（当前仓库没有，先占位防将来）
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.zip  binary
+*.7z   binary
+*.exe  binary
+*.dll  binary
+*.pdb  binary
+*.pfx  binary

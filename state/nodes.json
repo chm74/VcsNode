@@ -1,11 +1,11 @@
 {
   "format": 1,
-  "updatedAt": "2026-10-29T09:01:39.907Z",
+  "updatedAt": "2026-10-29T09:34:40.967Z",
   "nodes": {
     "node-98": {
       "ip": "172.16.2.98",
       "role": "source",
-      "lastSeenAt": 1793264498900,
+      "lastSeenAt": 1793266479963,
       "connectedAt": 1793154241249,
       "hostname": "localhost",
       "agentVersion": null,
@@ -30,14 +30,14 @@
           "conn": null,
           "health": {
             "ok": false,
-            "checkedAt": 1793264496913,
+            "checkedAt": 1793266477899,
             "status": 0,
             "detail": "进程不在"
           },
           "notes": [
             "localRoot 不存在：E:\\nginx\\html\\dist"
           ],
-          "observedAt": 1793264498900
+          "observedAt": 1793266479963
         },
         "webapi": {
           "id": "webapi",
@@ -56,14 +56,14 @@
           "conn": null,
           "health": {
             "ok": false,
-            "checkedAt": 1793264496913,
+            "checkedAt": 1793266477899,
             "status": 0,
             "detail": "进程不在"
           },
           "notes": [
             "localRoot 不存在：E:\\SceneAutomationBuild\\SceneAutoApply"
           ],
-          "observedAt": 1793264498900
+          "observedAt": 1793266479963
         },
         "generateclient": {
           "id": "generateclient",
@@ -86,14 +86,14 @@
           },
           "health": {
             "ok": false,
-            "checkedAt": 1793264496913,
+            "checkedAt": 1793266477899,
             "detail": "进程不在，无法建立连接"
           },
           "notes": [
             "localRoot 不存在：E:\\SceneAutomationBuild\\GenerateClient",
             "进程不在，无法建立连接"
           ],
-          "observedAt": 1793264498900
+          "observedAt": 1793266479963
         },
         "generatetool": {
           "id": "generatetool",
@@ -116,14 +116,14 @@
           },
           "health": {
             "ok": false,
-            "checkedAt": 1793264496913,
+            "checkedAt": 1793266477899,
             "detail": "进程不在，无法建立连接"
           },
           "notes": [
             "localRoot 不存在：E:\\SceneAutomationBuild\\GenerateTool",
             "进程不在，无法建立连接"
           ],
-          "observedAt": 1793264498900
+          "observedAt": 1793266479963
         },
         "workerhost": {
           "id": "workerhost",
@@ -146,14 +146,14 @@
           },
           "health": {
             "ok": false,
-            "checkedAt": 1793264496913,
+            "checkedAt": 1793266477899,
             "detail": "进程不在，无法建立连接"
           },
           "notes": [
             "localRoot 不存在：E:\\SceneAutomationBuild\\SceneAutomation.WorkerHost",
             "进程不在，无法建立连接"
           ],
-          "observedAt": 1793264498900
+          "observedAt": 1793266479963
         },
         "mcpserver": {
           "id": "mcpserver",
@@ -172,13 +172,13 @@
           "conn": null,
           "health": {
             "ok": false,
-            "checkedAt": 1793264496913,
+            "checkedAt": 1793266477899,
             "detail": "进程不在，跳过探活"
           },
           "notes": [
             "localRoot 不存在：E:\\SceneAutomationBuild\\SceneAutoApply.McpServer"
           ],
-          "observedAt": 1793264498900
+          "observedAt": 1793266479963
         },
         "shp_plants": {
           "id": "shp_plants",
@@ -197,13 +197,13 @@
           "conn": null,
           "health": {
             "ok": false,
-            "checkedAt": 1793264496913,
+            "checkedAt": 1793266477899,
             "detail": "进程不在，跳过探活"
           },
           "notes": [
             "localRoot 不存在：D:\\SceneAutomationV3\\Tools\\ShapefileTool.Plants.20230905"
           ],
-          "observedAt": 1793264498900
+          "observedAt": 1793266479963
         },
         "shp_buildings": {
           "id": "shp_buildings",
@@ -222,13 +222,13 @@
           "conn": null,
           "health": {
             "ok": false,
-            "checkedAt": 1793264496913,
+            "checkedAt": 1793266477899,
             "detail": "进程不在，跳过探活"
           },
           "notes": [
             "localRoot 不存在：D:\\SceneAutomationV3\\Tools\\ShapefileTool.Buildings.20230905"
           ],
-          "observedAt": 1793264498900
+          "observedAt": 1793266479963
         },
         "tools": {
           "id": "tools",
@@ -249,7 +249,7 @@
           "notes": [
             "localRoot 不存在：D:\\SceneAutomationV3\\Tools"
           ],
-          "observedAt": 1793264498900
+          "observedAt": 1793266479963
         }
       }
     },
