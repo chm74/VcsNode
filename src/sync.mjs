@@ -89,8 +89,8 @@ function describe(e) {
  * 按 manifest 落地。
  *
  * @param {object} o
- * @param {object} o.manifest   发布包清单
- * @param {string} o.share      发布包目录（成员视角的 UNC）
+ * @param {object} o.manifest   同步包清单
+ * @param {string} o.share      同步包目录（成员视角的 UNC）
  * @param {Record<string, object>} o.specs  本机组件定义（要 localRoot）
  * @param {string} o.backupRoot 备份根目录
  * @param {string[]|null} o.components 只落这些组件（null = 清单里全部）

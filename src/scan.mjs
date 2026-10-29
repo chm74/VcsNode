@@ -359,7 +359,7 @@ export function buildPending(snapshot, baseline) {
 export function computeTargets(config) {
   const out = {};
   for (const [ip, node] of Object.entries(config?.nodes || {})) {
-    if (node.role === 'source') continue;          // 源节点不接收发布
+    if (node.role === 'source') continue;          // 源节点不接收同步
     const id = String(node.id || ip).replace(/^node-/, '');
     for (const [comp, v] of Object.entries(node.components || {})) {
       if (!v || v.enabled === false) continue;
@@ -409,7 +409,7 @@ export function buildBaseline(snapshot) {
     format: 1,
     createdAt: snapshot.createdAt,
     components: snapshot.components,
-    note: '上一次发布/建基线时的文件清单。扫描结果与它比对得出变更。',
+    note: '上一次同步/建基线时的文件清单。扫描结果与它比对得出变更。',
   };
 }
 

@@ -1,4 +1,4 @@
-/* 发布包（M2：把 98 上改后的文件做成一个可拉的 release）
+/* 同步包（M2：把 98 上改后的文件做成一个可拉的 release）
  *
  * 目录结构（在 98 的共享里，成员只读）：
  *
@@ -8,12 +8,12 @@
  *
  * 原则：
  *   - 只复制清单里勾选的文件；清单来自上一次扫描（pending），复制时重新算 sha256，
- *     不信任 8 位短哈希 —— 扫描到发布之间文件可能又变了，那就以发布时的内容为准。
+ *     不信任 8 位短哈希 —— 扫描到同步之间文件可能又变了，那就以同步时的内容为准。
  *   - `path` 一律相对**组件根**，成员用它拼自己的 localRoot：四台机器路径不同，
  *     写绝对路径只可能对一台有效。
  *   - 98 的「扫描源」必须就是 98 实际在跑的目录（= node-98 的 localRoot）。
- *     源码目录 ≠ 运行目录时拒绝发布（layout_mismatch）—— 把 .cs 覆盖进发布目录会直接搞坏服务。
- *   - 发布成功后才推进基线：没发出去的文件继续留在待发布区。
+ *     源码目录 ≠ 运行目录时拒绝同步（layout_mismatch）—— 把 .cs 覆盖进同步目录会直接搞坏服务。
+ *   - 同步成功后才推进基线：没发出去的文件继续留在待同步区。
  */
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
@@ -72,7 +72,7 @@ export function sharedRootFor(config, nodeDef) {
   return String(own || sharedRootOf(config) || '').replace(/[\\/]+$/, '');
 }
 
-/** 98（发布源）的 localRoot —— 扫描源必须和它一致，否则拒绝发布 */
+/** 98（同步源）的 localRoot —— 扫描源必须和它一致，否则拒绝同步 */
 export function sourceRootOf(config, component) {
   const entry = Object.entries(config?.nodes || {}).find(([, n]) => n.role === 'source');
   return entry ? entry[1]?.components?.[component]?.localRoot ?? null : null;
@@ -81,7 +81,7 @@ export function sourceRootOf(config, component) {
 /**
  * 扫描源 vs 98 运行目录。
  * 不一致时不能「就地覆盖」：典型例子 sources.webapi 指向源码目录，
- * 而 98 跑的是 publish 出来的另一个目录 —— 把源码铺进发布目录会直接起不来。
+ * 而 98 跑的是 publish 出来的另一个目录 —— 把源码铺进同步目录会直接起不来。
  */
 export function checkLayout(config, component, srcRoot) {
   const runRoot = sourceRootOf(config, component);
@@ -116,7 +116,7 @@ export function targetsFor(config, component) {
   return out;
 }
 
-/* ── 发布包 ──────────────────────────────────────────────── */
+/* ── 同步包 ──────────────────────────────────────────────── */
 
 export function makeReleaseId(d = new Date()) {
   const p = (n) => String(n).padStart(2, '0');
@@ -153,7 +153,7 @@ async function copyHash(src, dst) {
 export async function buildRelease({ config, pending, selections, includeDeletes = false, note = '', by = null }) {
   const sharedRoot = sharedRootOf(config);
   if (!sharedRoot) {
-    const e = new Error('配置里没有 storage.sharedRoot，无法放发布包');
+    const e = new Error('配置里没有 storage.sharedRoot，无法放同步包');
     e.code = 'share_not_configured';
     throw e;
   }
@@ -184,7 +184,7 @@ export async function buildRelease({ config, pending, selections, includeDeletes
     plan.push({ component: sel.component, root: g.root, files });
   }
   if (!plan.length) {
-    const e = new Error('没有可发布的文件（勾选项和清单对不上，或只勾了删除项但没确认删除）');
+    const e = new Error('没有可同步的文件（勾选项和清单对不上，或只勾了删除项但没确认删除）');
     e.code = 'empty_selection';
     throw e;
   }
@@ -263,7 +263,7 @@ export async function buildRelease({ config, pending, selections, includeDeletes
   };
 }
 
-/** 只留最近 keep 个发布包（新的一律保留） */
+/** 只留最近 keep 个同步包（新的一律保留） */
 export async function pruneReleases(releasesDir, keep = 5, keepId = null) {
   let names = [];
   try {
@@ -285,75 +285,184 @@ export async function pruneReleases(releasesDir, keep = 5, keepId = null) {
   return removed;
 }
 
-/** 成员侧用：读发布包清单 */
+/** 成员侧用：读同步包清单 */
 export async function readManifest(dir) {
   return readJson(join(dir, 'manifest.json'));
 }
 
-/* ── 发布成功后推进基线 ─────────────────────────────────── */
+/* ── 落地台账：哪台机器上已经是哪份内容 ───────────────────── */
 
 /**
- * 把「已经确认落地」的文件写进基线，并从待发布区移除，避免发完还一直挂着。
- * 只应在所有目标节点都成功之后调用。
+ * 台账（state/landed.json）只记「某台机器上这个文件已经是这份内容了」。
+ *
+ * 为什么不塞进 pending.json：pending 每次扫描都被整体重写，落地进度会跟着丢；
+ * 而「只发部分节点」时又必须记住谁已经发了——否则要么重复发，要么以为发过。
  */
-export async function mergeIntoBaseline({ baselineFile, pendingFile, manifest }) {
+export const LANDED_FORMAT = 1;
+
+const markerOf = (f) => String(f.sha256 || '').slice(0, 8);
+
+export async function readLanded(landedFile) {
+  const j = await readJson(landedFile);
+  if (!j || Number(j.format) !== LANDED_FORMAT || !j.components || typeof j.components !== 'object') {
+    return { format: LANDED_FORMAT, updatedAt: null, components: {} };
+  }
+  return j;
+}
+
+/**
+ * 把这次成功的落地记进台账。
+ * 内容变了（marker 不同）就清掉旧记录：不能拿「同一路径、旧内容」的落地记录冒充这一次。
+ */
+export async function recordLanding({ landedFile, manifest, nodeResults }) {
+  const ledger = await readLanded(landedFile);
+  let marked = 0;
+
+  const mark = (component, path, marker, nodeId, at) => {
+    const bucket = (ledger.components[component] ||= {});
+    const key = toSlash(path);
+    const cur = bucket[key];
+    if (!cur || cur.marker !== marker) bucket[key] = { marker, nodes: {} };
+    bucket[key].nodes[nodeId] = at;
+    marked++;
+  };
+
+  for (const [nodeId, r] of Object.entries(nodeResults || {})) {
+    if (!r || r.ok !== true) continue;
+    const mine = new Set(r.comps || []);
+    const at = r.landedAt || localIso(new Date());
+    for (const f of manifest.files || []) {
+      if (mine.has(f.component)) mark(f.component, f.path, markerOf(f), nodeId, at);
+    }
+    if (r.includeDeletes) {
+      for (const d of manifest.deletes || []) {
+        if (mine.has(d.component)) mark(d.component, d.path, 'D', nodeId, at);
+      }
+    }
+  }
+
+  if (marked) {
+    ledger.updatedAt = localIso(new Date());
+    await writeJsonAtomic(landedFile, ledger);
+  }
+  return { ledger, marked };
+}
+
+/** 给界面用：标出每个文件已经在哪些节点落地（按当前清单里的哈希比对，旧内容不算） */
+export function annotatePending(pending, ledger) {
+  for (const g of pending?.groups || []) {
+    for (const f of g.files || []) {
+      const marker = f.action === 'D' ? 'D' : String(f.sha256 || '').slice(0, 8);
+      const e = ledger?.components?.[g.component]?.[toSlash(f.path)];
+      f.landedOn = e && e.marker === marker ? Object.keys(e.nodes).sort() : [];
+    }
+  }
+  return pending;
+}
+
+/* ── 落地完成后推进基线 ─────────────────────────────────── */
+
+/**
+ * 逐个文件判断「声明的目标节点是不是都落地了这份内容」：
+ *   - 都齐了   → 写进基线，并从待同步区移除；
+ *   - 还差节点 → 原样留在待同步区，界面显示「已发 149 · 待发 145」。
+ *
+ * 这样「只发 149」不会把 145 悄悄落下：基线没推进，下次扫描照样看得见这批文件。
+ * targetsByComponent 必须是**配置里声明的全部目标**，不能只传本次勾选的那几台。
+ */
+export async function mergeIntoBaseline({
+  baselineFile, pendingFile, landedFile, manifest,
+  targetsByComponent = {}, nodeResults = null,
+}) {
+  if (nodeResults) await recordLanding({ landedFile, manifest, nodeResults });
+  const ledger = await readLanded(landedFile);
+
   const baseline = (await readJson(baselineFile)) || { format: 1, components: {} };
   baseline.components ||= {};
 
+  const waiting = [];
+  const consumed = [];
+  const advanced = { files: 0, deletes: 0 };
+
+  /** 还缺哪些节点（空数组 = 齐了）。没有目标节点的文件一律不算齐，免得白推进基线。 */
+  const missingOf = (component, path, marker) => {
+    const all = targetsByComponent[component] || [];
+    const e = ledger.components?.[component]?.[toSlash(path)];
+    const got = e && e.marker === marker ? e.nodes || {} : {};
+    return { all, missing: all.filter((id) => !got[id]) };
+  };
+
   for (const f of manifest.files || []) {
+    const { all, missing } = missingOf(f.component, f.path, markerOf(f));
+    if (!all.length || missing.length) {
+      waiting.push({ component: f.component, path: f.path, action: f.action, missing, reason: all.length ? null : 'no_target' });
+      continue;
+    }
     const c = (baseline.components[f.component] ||= { root: null, files: {} });
     c.files ||= {};
     c.files[f.path] = { sha256: f.sha256, size: f.size, mtimeMs: f.mtimeMs };
+    advanced.files++;
+    consumed.push([f.component, f.path]);
   }
+
   for (const d of manifest.deletes || []) {
-    const c = baseline.components[d.component];
-    if (c?.files) delete c.files[d.path];
-  }
-  baseline.createdAt = localIso(new Date());
-  await writeJsonAtomic(baselineFile, baseline);
-
-  const pending = await readJson(pendingFile);
-  if (!pending) return;
-
-  const gone = new Map();
-  const add = (comp, p) => {
-    if (!gone.has(comp)) gone.set(comp, new Set());
-    gone.get(comp).add(toSlash(p).toLowerCase());
-  };
-  for (const f of manifest.files || []) add(f.component, f.path);
-  for (const d of manifest.deletes || []) add(d.component, d.path);
-
-  let bytes = 0;
-  for (const g of pending.groups || []) {
-    const set = gone.get(g.component);
-    if (!set) {
-      bytes += g.files.reduce((a, f) => a + (f.action === 'D' ? 0 : f.sizeBytes || 0), 0);
+    const { all, missing } = missingOf(d.component, d.path, 'D');
+    if (!all.length || missing.length) {
+      waiting.push({ component: d.component, path: d.path, action: 'D', missing, reason: all.length ? null : 'no_target' });
       continue;
     }
-    g.files = g.files.filter((f) => !set.has(toSlash(f.path).toLowerCase()));
+    const c = baseline.components[d.component];
+    if (c?.files) delete c.files[d.path];
+    advanced.deletes++;
+    consumed.push([d.component, d.path]);
+  }
+
+  // 已齐的条目用完就从台账里删掉：台账只留「还没发齐」的，不会无限长大
+  for (const [comp, path] of consumed) {
+    const bucket = ledger.components?.[comp];
+    if (!bucket) continue;
+    delete bucket[toSlash(path)];
+    if (!Object.keys(bucket).length) delete ledger.components[comp];
+  }
+  if (consumed.length) {
+    ledger.updatedAt = localIso(new Date());
+    await writeJsonAtomic(landedFile, ledger);
+  }
+
+  if (advanced.files || advanced.deletes) {
+    baseline.createdAt = localIso(new Date());
+    await writeJsonAtomic(baselineFile, baseline);
+  }
+
+  const pending = await readJson(pendingFile);
+  if (!pending) return { advanced, waiting, remaining: 0 };
+
+  const gone = new Set(consumed.map(([c, p]) => `${c}\u0000${toSlash(p).toLowerCase()}`));
+  for (const g of pending.groups || []) {
+    g.files = (g.files || []).filter((f) => !gone.has(`${g.component}\u0000${toSlash(f.path).toLowerCase()}`));
     g.counts = {
       A: g.files.filter((f) => f.action === 'A').length,
       M: g.files.filter((f) => f.action === 'M').length,
       D: g.files.filter((f) => f.action === 'D').length,
     };
-    bytes += g.files.reduce((a, f) => a + (f.action === 'D' ? 0 : f.sizeBytes || 0), 0);
   }
 
+  const rest = pending.groups || [];
   pending.stats = {
     ...(pending.stats || {}),
-    components: (pending.groups || []).filter((g) => g.files.length).length,
-    added: (pending.groups || []).reduce((a, g) => a + g.counts.A, 0),
-    modified: (pending.groups || []).reduce((a, g) => a + g.counts.M, 0),
-    deleted: (pending.groups || []).reduce((a, g) => a + g.counts.D, 0),
-    bytes,
+    components: rest.filter((g) => g.files.length).length,
+    added: rest.reduce((a, g) => a + g.counts.A, 0),
+    modified: rest.reduce((a, g) => a + g.counts.M, 0),
+    deleted: rest.reduce((a, g) => a + g.counts.D, 0),
+    bytes: rest.reduce((a, g) => a + g.files.reduce((x, f) => x + (f.action === 'D' ? 0 : f.sizeBytes || 0), 0), 0),
   };
   pending.publishedAt = localIso(new Date());
   pending.lastReleaseId = manifest.relId;
   await writeJsonAtomic(pendingFile, pending);
-  return pending;
+  return { advanced, waiting, remaining: rest.reduce((a, g) => a + g.files.length, 0) };
 }
 
-/* ── 发布记录（state/releases.json + state/releases/<relId>.json） ── */
+/* ── 同步记录（state/releases.json + state/releases/<relId>.json） ── */
 
 const REL_ID_RE = /^rel-\d{8}-\d{6}-[a-z0-9]{4}$/;
 
@@ -380,6 +489,7 @@ function summaryOf(detail) {
     by: detail.by || null,
     note: detail.note || '',
     status: detail.status,
+    scope: detail.scope || null,
     components: detail.components || [],
     counts: detail.counts || { A: 0, M: 0, D: 0 },
     files: (detail.files || []).length,

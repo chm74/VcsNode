@@ -551,7 +551,7 @@ table.matrix thead th:first-child { background: #fbfcfe; }
 
 .event-mini .e-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ── 待发布区 ─────────────────────────────────────────── */
+/* ── 待同步区 ─────────────────────────────────────────── */
 
 .scan-bar {
   display: flex;
@@ -570,7 +570,7 @@ table.matrix thead th:first-child { background: #fbfcfe; }
 
 .draft-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 312px;
+  grid-template-columns: minmax(0, 1fr) 328px;   /* 右侧「同步影响」面板：312 → 328（+5%） */
   gap: 18px;
   align-items: start;
 }
@@ -717,6 +717,13 @@ table.matrix thead th:first-child { background: #fbfcfe; }
 .check-row input { margin-top: 2px; flex: 0 0 auto; }
 .check-row.danger { color: var(--err); }
 
+.node-pick { display: flex; flex-direction: column; gap: 1px; }
+.node-pick .check-row { padding: 4px 0; }
+.node-pick .np-ok { color: var(--ok, #2e9e5b); }
+.node-pick .np-warn { color: var(--err); }
+.node-pick .np-muted { color: var(--muted); }
+.node-pick .np-empty { font-size: 12px; color: var(--muted); padding: 4px 0; }
+
 .side-actions { display: flex; gap: 9px; padding: 4px 16px 12px; }
 .side-actions .btn { flex: 1; }
 
@@ -725,6 +732,41 @@ table.matrix thead th:first-child { background: #fbfcfe; }
 /* ── 表格 ─────────────────────────────────────────────── */
 
 .table-wrap { overflow-x: auto; }
+
+/* 事件分页 */
+.pager {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 10px 14px; border-top: 1px solid var(--line);
+}
+.pager-btns { display: flex; align-items: center; gap: 4px; }
+.pager-btn {
+  min-width: 28px; height: 26px; padding: 0 6px;
+  border: 1px solid var(--line-strong); border-radius: 6px;
+  background: #fff; color: var(--text); font: inherit; font-size: 12px; cursor: pointer;
+}
+.pager-btn:hover:not(:disabled) { border-color: var(--brand); color: var(--brand); }
+.pager-btn.cur { background: var(--brand); border-color: var(--brand); color: #fff; }
+.pager-btn:disabled { opacity: .4; cursor: default; }
+
+/* 长说明列：一行截断，悬停看全文 */
+.table td.trunc { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 启停记录：顶部统计 */.stat-row {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px; margin-bottom: 14px;
+}
+.stat {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px 14px; min-width: 0;
+}
+.stat-k { font-size: 12px; color: var(--muted); }
+.stat-v {
+  font-size: 20px; font-weight: 600; margin-top: 6px; line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.stat-s { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+.stat.err .stat-v { color: var(--err); }
 
 table.table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 
@@ -952,7 +994,7 @@ table.config-table thead th:first-child { background: #fbfcfe; }
 .drawer-actions { display: flex; gap: 9px; padding: 14px 0 6px; }
 .drawer-actions .btn { flex: 1; }
 
-/* ── 发布详情：文件级明细（抽屉只有 460px，只能紧凑排版） ── */
+/* ── 同步详情：文件级明细（抽屉只有 460px，只能紧凑排版） ── */
 
 .landing-row {
   display: grid;

@@ -12,8 +12,8 @@
  *   POST /api/agent/report 成员上报（hello / snapshot / ack / nack / probe）
  *   GET  /healthz          自检
  *
- * 现在做到：变更清单（扫描 + 待发布区）、配置页读写、节点观测、启停指令（M1）、
- * 更新文件 / 预发布（M2，就地覆盖 + 发布记录）。还没做：切换上线（commit）、一键回退、构建。
+ * 现在做到：变更清单（扫描 + 待同步区）、配置页读写、节点观测、启停指令（M1）、
+ * 更新文件 / 预同步（M2，就地覆盖 + 同步记录）。还没做：切换上线（commit）、一键回退、构建。
  *
  * 用法：
  *   node bin/master.mjs                        # 读 config/vcsnode.yaml，端口 47821
@@ -36,9 +36,11 @@ import { NodeRegistry, shortId } from '../src/nodes.mjs';
 import { sampleNode } from '../src/probe.mjs';
 import {
   buildRelease, targetsFor, checkLayout, mergeIntoBaseline,
+  readLanded, annotatePending,
   saveRelease, listReleases, getRelease, sharedRootFor, storeDirOf,
 } from '../src/release.mjs';
 import { verifyRequest, NonceStore } from '../src/agent-auth.mjs';
+import { createEventLog } from '../src/event-log.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const UI_ROOT = join(ROOT, 'ui');
@@ -58,6 +60,7 @@ function parseArgs(argv) {
   const out = {
     config: join(ROOT, 'config', 'vcsnode.yaml'),
     stateDir: join(ROOT, 'state'),
+    logDir: null,          // 默认 <stateDir 的上一级>\logs
     port: null,
     host: '0.0.0.0',
     remaps: [],
@@ -68,10 +71,11 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '-h' || a === '--help') {
-      console.log('用法：node bin/master.mjs [--config <file>] [--state <dir>] [--port <n>] [--host <ip>] [--remap OLD=NEW] [--no-local-sample] [--sample-interval <ms>] [--offline-ms <ms>]');
+      console.log('用法：node bin/master.mjs [--config <file>] [--state <dir>] [--log-dir <dir>] [--port <n>] [--host <ip>] [--remap OLD=NEW] [--no-local-sample] [--sample-interval <ms>] [--offline-ms <ms>]');
       process.exit(0);
     } else if (a === '--config') out.config = resolve(argv[++i]);
     else if (a === '--state') out.stateDir = resolve(argv[++i]);
+    else if (a === '--log-dir') out.logDir = resolve(argv[++i]);
     else if (a === '--port') out.port = Number(argv[++i]);
     else if (a === '--host') out.host = argv[++i];
     else if (a === '--no-local-sample') out.localSample = false;
@@ -94,9 +98,23 @@ const args = parseArgs(process.argv.slice(2));
 let config = parseYaml(await readFile(args.config, 'utf8'));
 const baselineFile = join(args.stateDir, 'baseline.json');
 const pendingFile = join(args.stateDir, 'pending.json');
+const landedFile = join(args.stateDir, 'landed.json');   // 哪台机器上已经是哪份内容（按文件）
 const revisionFile = join(args.stateDir, 'config-revision.json');
 const nodesFile = join(args.stateDir, 'nodes.json');
 const port = args.port || Number(String(config?.cluster?.master || '').split(':').pop()) || 47821;
+
+/* ── 事件流水（30 天，落盘 + 分页查询） ─────────────────── */
+
+const logDir = args.logDir || join(dirname(args.stateDir), 'logs');
+const eventLog = createEventLog({ dir: logDir, keepDays: 30 });
+const eventCount = await eventLog.init();
+
+/* ── 启停台账（成员上报汇总，保留 30 天） ───────────────── */
+// 成员本机也有 logs\actions-YYYYMMDD.jsonl；这里是 98 侧汇总，界面「启停记录」读它
+const actionDir = join(args.stateDir, 'actions');
+const actionLog = createEventLog({ dir: actionDir, prefix: '', keepDays: 30 });
+const actionCount = await actionLog.init();
+const actionIds = actionLog.ids();   // 去重：成员重发同一条不会写两行
 
 /* ── 节点观测（M0 只读） ──────────────────────────────── */
 
@@ -114,8 +132,11 @@ const registry = new NodeRegistry({
   offlineMs: args.offlineMs || Number(config?.cluster?.offlineMs) || undefined,
   localGraceMs: args.sampleInterval * 2 + 5000,
   getRevision: () => revisionNo,
+  onEvent: (ev) => eventLog.append(ev),
 });
 await registry.load();
+// 重启后事件页不该是空的：把 30 天里最近的事件装回内存（/api/ui/nodes 的 events 用它）
+registry.events = eventLog.recent(300);
 
 const nonceStore = new NonceStore();
 
@@ -303,7 +324,7 @@ async function runTask(body = {}, req = null) {
   if (!found) throw fail(404, 'unknown_node', `配置里没有节点 ${body.node || '(空)'}`);
   const { id, n } = found;
   if (n.local || n.role === 'source') {
-    throw fail(400, 'manual_node', `${n.ip} 是发布源，由人工操作，控制面不下发指令`);
+    throw fail(400, 'manual_node', `${n.ip} 是同步源，由人工操作，控制面不下发指令`);
   }
 
   const spec = registry.specsFor(n.ip)[component];
@@ -351,7 +372,7 @@ async function runTask(body = {}, req = null) {
   };
 }
 
-/* ── 更新文件（M2）：把 98 上勾选的改动做成发布包，成员只读拉取落地 ── */
+/* ── 更新文件（M2）：把 98 上勾选的改动做成同步包，成员只读拉取落地 ── */
 
 let staging = null;
 
@@ -360,7 +381,7 @@ async function runStage(body = {}, req = null) {
 
   const pending = await readJson(pendingFile);
   if (!pending || !(pending.groups || []).some((g) => (g.files || []).length)) {
-    throw fail(409, 'no_pending', '待发布区是空的：先扫描一次');
+    throw fail(409, 'no_pending', '待同步区是空的：先扫描一次');
   }
 
   const comps = Array.isArray(body.components) ? body.components.map((c) => String(c)).filter(Boolean) : [];
@@ -375,7 +396,7 @@ async function runStage(body = {}, req = null) {
   const groups = new Map((pending.groups || []).map((g) => [g.component, g]));
   for (const c of comps) {
     const g = groups.get(c);
-    if (!g) throw fail(400, 'not_in_pending', `待发布区里没有组件 ${c}`);
+    if (!g) throw fail(400, 'not_in_pending', `待同步区里没有组件 ${c}`);
     try {
       checkLayout(config, c, g.root);
     } catch (e) {
@@ -383,7 +404,7 @@ async function runStage(body = {}, req = null) {
     }
   }
 
-  // 2) 目标节点：这些组件部署在哪些机器上
+  // 2) 目标节点：这些组件部署在哪些机器上（配置里声明 + localRoot 已填）
   const targets = new Map();     // shortId -> { ip, id, nodeId, comps:Set }
   for (const c of comps) {
     for (const t of targetsFor(config, c)) {
@@ -392,11 +413,30 @@ async function runStage(body = {}, req = null) {
       targets.set(t.id, cur);
     }
   }
-  if (body.nodes && Array.isArray(body.nodes) && body.nodes.length) {
-    const keep = new Set(body.nodes.map((n) => shortId(String(n).replace(/^node-/, ''))));
-    for (const k of [...targets.keys()]) if (!keep.has(k)) targets.delete(k);
-  }
   if (!targets.size) throw fail(400, 'no_target', '这些组件没有任何已部署的成员节点（localRoot 都没填？）');
+
+  // 配置里声明了这些组件的**全部**目标节点；不管这次勾了谁，推进基线都要看它。
+  const declaredByComponent = {};
+  for (const c of comps) declaredByComponent[c] = targetsFor(config, c).map((t) => t.id).sort();
+  const declaredIds = [...targets.keys()].sort();
+
+  // 本次想发哪几台（不传 = 全部）。只发一部分是允许的，但必须是「本来就在名单里」的机器。
+  const requestedIds = Array.isArray(body.nodes)
+    ? [...new Set(body.nodes.map((n) => shortId(String(n).replace(/^node-/, ''))).filter(Boolean))]
+    : [];
+  // 明确传了空数组 = 一台都不发，直接拒；不能悄悄退回「全发」
+  if (Array.isArray(body.nodes) && !requestedIds.length) {
+    throw fail(400, 'no_target', '没有勾选任何目标节点（不传 nodes 才表示全发）');
+  }
+  if (requestedIds.length) {
+    const bad = requestedIds.filter((id) => !targets.has(id));
+    if (bad.length) {
+      throw fail(400, 'bad_target',
+        `${bad.join('、')} 不是这批组件的目标节点（可发：${declaredIds.join('、')}）`);
+    }
+    for (const k of [...targets.keys()]) if (!requestedIds.includes(k)) targets.delete(k);
+  }
+  if (!targets.size) throw fail(400, 'no_target', '没有勾选任何目标节点');
 
   // 配了这个组件、但 localRoot 还空着的节点：不会收到文件。别让它静默漏掉。
   const warnings = [];
@@ -409,7 +449,7 @@ async function runStage(body = {}, req = null) {
     }
   }
 
-  // 3) 目标节点必须在等：不允许「半套发布」
+  // 3) 选中的节点必须在等：允许分批发，但不允许「发了一半就断线」
   const offline = [];
   for (const [id, t] of targets) {
     const found = [...registry.nodes].find(([k]) => shortId(k) === id);
@@ -417,7 +457,7 @@ async function runStage(body = {}, req = null) {
     t.nodeId = found[0];
     if (!found[1].online) offline.push(id);
   }
-  if (offline.length) throw fail(409, 'node_offline', `${offline.join('、')} 不在线：等它连上再发（不允许只发一半）`);
+  if (offline.length) throw fail(409, 'node_offline', `${offline.join('、')} 不在线：等它连上再发，或者在弹窗里取消勾选它`);
 
   // 4) 要覆盖的组件不能还在跑（覆盖正被读的文件只会得到一堆半新半旧）
   const matrix = registry.uiPayload().matrix || {};
@@ -439,7 +479,7 @@ async function runStage(body = {}, req = null) {
   staging = (async () => {
     const started = Date.now();
 
-    // 5) 98 侧做发布包（只复制勾选的文件，复制时重新算 sha）
+    // 5) 98 侧做同步包（只复制勾选的文件，复制时重新算 sha）
     const built = await buildRelease({
       config,
       pending,
@@ -496,8 +536,22 @@ async function runStage(body = {}, req = null) {
     }));
 
     const list = Object.values(nodes);
-    const status = list.length && list.every((v) => v.ok) ? 'landed'
-      : list.some((v) => v.ok) ? 'partial' : 'failed';
+    const chosenOk = list.length > 0 && list.every((v) => v.ok);
+    const status = !list.length ? 'failed'
+      : chosenOk ? 'landed'
+        : list.some((v) => v.ok) ? 'partial' : 'failed';
+    const skipped = declaredIds.filter((id) => !nodes[id]);
+
+    // 每台只认「它自己那部分组件」落地成功，逐台记台账
+    const nodeResults = {};
+    for (const [id, v] of Object.entries(nodes)) {
+      nodeResults[id] = {
+        ok: v.ok === true,
+        comps: [...(targets.get(id)?.comps || [])],
+        includeDeletes: body.includeDeletes === true,
+        landedAt: v.landedAt,
+      };
+    }
 
     const detail = {
       format: 1,
@@ -506,6 +560,7 @@ async function runStage(body = {}, req = null) {
       by,
       note: String(body.note || ''),
       status,
+      scope: { requested: [...targets.keys()].sort(), declared: declaredIds, skipped },
       dir: built.dir,
       components: built.manifest.components,
       counts: {
@@ -521,18 +576,33 @@ async function runStage(body = {}, req = null) {
     };
     await saveRelease(args.stateDir, detail);
 
-    // 7) 全部落地才推进基线；有失败就留在待发布区，重发时不至于漏文件
-    if (status === 'landed') {
-      await mergeIntoBaseline({ baselineFile, pendingFile, manifest: built.manifest });
+    // 7) 逐个文件推进基线：所有声明节点都落地了才从待同步区移除，
+    //    只发了一部分节点的话，剩下的文件会留在待同步区（等下次补齐）。
+    const merged = await mergeIntoBaseline({
+      baselineFile,
+      pendingFile,
+      landedFile,
+      manifest: built.manifest,
+      targetsByComponent: declaredByComponent,
+      nodeResults,
+    });
+
+    if (skipped.length) warnings.push(`${skipped.join('、')} 本次没选，这些文件还在待同步区，等补齐后再发`);
+    if (merged.waiting.length) {
+      const who = [...new Set(merged.waiting.flatMap((w) => w.missing))].sort();
+      warnings.push(`${merged.waiting.length} 个文件还没在 ${who.join('、') || '(无目标节点)'} 落地，留在待同步区`);
     }
 
     const msg = list.map((v) => `${v.ok ? '✔' : '✘'}${v.error ? ` ${v.error}` : ''}`).join(' ');
-    console.log(`[stage] ${built.relId} ${status} · ${detail.durationMs}ms · ${msg}`);
+    console.log(`[stage] ${built.relId} ${status} · ${detail.durationMs}ms · ${msg}`
+      + ` · 基线 +${merged.advanced.files}/-${merged.advanced.deletes} 待发 ${merged.waiting.length}`);
     return {
-      ok: status === 'landed',
-      code: status === 'landed' ? undefined : status,
+      ok: chosenOk,
+      code: chosenOk ? undefined : status,
       releaseId: built.relId,
       status,
+      scope: detail.scope,
+      baseline: merged,
       dir: built.dir,
       stats: built.stats,
       nodes,
@@ -686,7 +756,8 @@ const server = createServer(async (req, res) => {
     if (url.pathname === '/api/ui/pending' && req.method === 'GET') {
       const payload = await readJson(pendingFile);
       if (!payload) return sendJson(res, 404, { empty: true, reason: '还没有扫描结果' });
-      return sendJson(res, 200, payload);
+      // 带上「哪些节点已经落地了这份内容」，界面才能显示「已发 149 · 待发 145」
+      return sendJson(res, 200, annotatePending(payload, await readLanded(landedFile)));
     }
 
     if (url.pathname === '/api/ui/scan' && req.method === 'POST') {
@@ -717,7 +788,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname.startsWith('/api/ui/releases/') && req.method === 'GET') {
       const id = decodeURIComponent(url.pathname.slice('/api/ui/releases/'.length));
       const detail = await getRelease(args.stateDir, id);
-      if (!detail) return sendJson(res, 404, { ok: false, code: 'not_found', error: `没有发布记录 ${id}` });
+      if (!detail) return sendJson(res, 404, { ok: false, code: 'not_found', error: `没有同步记录 ${id}` });
       return sendJson(res, 200, detail);
     }
 
@@ -752,6 +823,36 @@ const server = createServer(async (req, res) => {
         console.warn(`[task] 拒绝：${e.code || ''} ${e.message}`);
         return sendJson(res, e.status || 400, { ok: false, code: e.code || 'failed', error: e.message });
       }
+    }
+
+    if (url.pathname === '/api/ui/events' && req.method === 'GET') {
+      const q = url.searchParams;
+      const r = eventLog.query({
+        page: q.get('page'),
+        size: q.get('size'),
+        node: q.get('node') || '',
+        action: q.get('action') || '',
+        result: q.get('result') || '',
+      });
+      return sendJson(res, 200, { ok: true, days: eventLog.keepDays, ...r });
+    }
+
+    if (url.pathname === '/api/ui/actions' && req.method === 'GET') {
+      const q = url.searchParams;
+      const r = actionLog.query({
+        page: q.get('page'),
+        size: q.get('size'),
+        node: q.get('node') || '',
+        component: q.get('component') || '',
+        action: q.get('action') || '',
+        result: q.get('result') || '',
+      });
+      return sendJson(res, 200, {
+        ok: true,
+        days: actionLog.keepDays,
+        ...r,
+        stats: actionLog.stats(),
+      });
     }
 
     if (url.pathname === '/api/ui/nodes' && req.method === 'GET') {
@@ -809,6 +910,34 @@ const server = createServer(async (req, res) => {
         case 'ack': registry.applyAck(auth.nodeId, p); break;
         case 'nack': registry.applyNack(auth.nodeId, p); break;
         case 'probe': registry.event(auth.nodeId, 'probe', `${(p.items || []).length} 项`, (p.items || []).every((i) => i.ok) ? 'ok' : 'warn'); break;
+        case 'action': {
+          // 成员的启停台账：本机写一份、上报一份；这里按 id 去重后落 state\actions\
+          const rec = p.record || {};
+          const action = String(rec.action || '');
+          if (!['start', 'stop', 'restart', 'stage', 'exit', 'lost'].includes(action)) {
+            return sendJson(res, 400, { ok: false, code: 'bad_action', error: `未知动作：${action || '(空)'}` });
+          }
+          const at = Number(rec.at) || Date.now();
+          const id = String(rec.id || `${auth.nodeId}-${at}-${action}-${rec.component || ''}`);
+          if (actionIds.has(id)) {
+            return sendJson(res, 200, { ok: true, duplicate: true, serverTime: Date.now() });
+          }
+          actionIds.add(id);
+          actionLog.append({
+            id,
+            at,
+            node: auth.nodeId,
+            component: rec.component ?? null,
+            action,
+            result: rec.result === 'fail' ? 'fail' : 'ok',
+            code: rec.code ?? null,
+            pid: rec.pid ?? null,
+            durationMs: rec.durationMs ?? null,
+            message: String(rec.message ?? '').slice(0, 300),
+            taskId: rec.taskId ?? null,
+          });
+          break;
+        }
         case 'log': break;
         default:
           return sendJson(res, 400, { ok: false, code: 'unknown_type', error: `未知上报类型：${body.type}` });
@@ -851,6 +980,8 @@ server.listen(port, args.host, () => {
   console.log(`  PID      ${process.pid}`);
   console.log(`  配置     ${args.config}`);
   console.log(`  状态目录 ${args.stateDir}`);
+  console.log(`  事件流水 ${logDir}（保留 ${eventLog.keepDays} 天，已载入 ${eventCount} 条）`);
+  console.log(`  启停台账 ${actionDir}（保留 ${actionLog.keepDays} 天，已载入 ${actionCount} 条）`);
   console.log(`  配置版本 rev ${revisionNo}`);
   console.log(`  节点     ${[...registry.nodes.values()].map((n) => n.id).join(' · ')}`);
   console.log(`  控制面   ${args.host === '0.0.0.0' ? '0.0.0.0' : args.host}:${port}/api/agent/stream（成员出站连入）`);

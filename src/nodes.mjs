@@ -39,13 +39,14 @@ export function fmtDuration(sec) {
 }
 
 export class NodeRegistry {
-  constructor({ config, stateFile, offlineMs = OFFLINE_MS, localGraceMs = null, getRevision = () => 0, now = () => Date.now() }) {
+  constructor({ config, stateFile, offlineMs = OFFLINE_MS, localGraceMs = null, getRevision = () => 0, now = () => Date.now(), onEvent = null }) {
     this.config = config;
     this.stateFile = stateFile;
     this.offlineMs = offlineMs;
     this.localGraceMs = localGraceMs;
     this.getRevision = getRevision;
     this.now = now;
+    this.onEvent = onEvent;   // 落盘钩子（master 用它写 logs\events-*.jsonl）
 
     this.nodes = new Map();   // nodeId -> state
     this.streams = new Map(); // nodeId -> { res, openedAt, addr }
@@ -149,6 +150,10 @@ export class NodeRegistry {
     };
     this.events.unshift(ev);
     if (this.events.length > MAX_EVENTS) this.events.length = MAX_EVENTS;
+    // 落盘（失败不能影响业务：事件只是记录）
+    if (this.onEvent) {
+      try { this.onEvent(ev); } catch { /* 忽略 */ }
+    }
     return ev;
   }
 
@@ -191,6 +196,7 @@ export class NodeRegistry {
 
     const t = this.now();
     n.uptimeSec = payload.uptimeSec ?? n.uptimeSec;
+    n.agentVersion = payload.agentVersion ?? n.agentVersion;
     n.configRevision = payload.configRevision ?? n.configRevision;
     n.lastSeq = payload.lastSeq ?? n.lastSeq;
     if (payload.host) n.hostname = payload.host;
@@ -366,6 +372,11 @@ export class NodeRegistry {
     if (!n) return false;
 
     if (this.streams.size >= MAX_STREAMS) this.closeStream([...this.streams.keys()][0]);
+    if (this.streams.has(nodeId)) {
+      // 同一 nodeId 又连进来：几乎总是成员机上起了两个 agent（旧进程没退 / 计划任务和前台各一个），
+      // 两边会互相把对方挤掉，表现为「连上 1 秒就断、一直重连」。
+      console.warn(`[stream] ${nodeId} 重复连接：关掉旧连接（成员机上是不是起了两个 agent？）`);
+    }
     this.closeStream(nodeId);
 
     res.writeHead(200, {
@@ -497,7 +508,7 @@ export class NodeRegistry {
     let badCount = 0;
     let observedCount = 0;
 
-    // 列顺序：发布源（98）永远第一列，其余按配置里 nodes: 的书写顺序，不按 IP 排
+    // 列顺序：同步源（98）永远第一列，其余按配置里 nodes: 的书写顺序，不按 IP 排
     for (const n of [...this.nodes.values()].sort((a, b) => (
       a.role === b.role ? (a.order ?? 0) - (b.order ?? 0) : (a.role === 'source' ? -1 : 1)
     ))) {
@@ -555,7 +566,7 @@ export class NodeRegistry {
         id: shortId(n.id),
         nodeId: n.id,
         ip: n.ip,
-        role: n.role === 'source' ? '主节点 · 发布源' : '成员',
+        role: n.role === 'source' ? '主节点 · 同步源' : '成员',
         online,
         local: !!n.local,
         hostname: n.hostname,

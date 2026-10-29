@@ -39,7 +39,7 @@ sign = HMAC-SHA256(secret, nodeId + "\n" + ts + "\n" + nonce + "\n" + method + "
 | `GET` | `/api/agent/stream?since=<seq>` | 事件流（SSE） | 常驻 |
 | `POST` | `/api/agent/report` | 上报状态、执行结果、探测结果 | 短连接 |
 | `GET` | `/api/ui/<…>` | 管理端查询 | 短连接 |
-| `POST` | `/api/ui/<…>` | 管理端操作（启停、发布、改配置） | 短连接 |
+| `POST` | `/api/ui/<…>` | 管理端操作（启停、同步、改配置） | 短连接 |
 | `GET` | `/healthz` | 主节点自身存活 | 短连接 |
 
 成员只实现前两个的客户端；管理端只走 `/api/ui/*`。
@@ -158,7 +158,7 @@ data: {"seq":42,"kind":"stop","component":"webapi","timeoutMs":30000}
 **约束**：
 
 - `kind` 与 `component` 必须存在于该节点的配置里，否则回 `nack`（`not_configured`）。
-- 主节点不接受成员上报的自由命令；发布源（`role: source`，即 98）一律 `400 manual_node`，不通过控制面启停。
+- 主节点不接受成员上报的自由命令；同步源（`role: source`，即 98）一律 `400 manual_node`，不通过控制面启停。
 - `id` 由主节点生成，成员必须原样带在 `ack` / `nack` 的 `taskId` 里 —— 主节点靠它把回执对上在等的那次请求。
 - 一次只跑一条：成员正在执行上一条时回 `nack busy`（不排队）。
 - **启动的工作目录只认配置**：`localRoot` + `start.cwd`（相对路径按 `localRoot` 解析），解析结果不存在就 `bad_cwd`，
@@ -313,7 +313,7 @@ running | starting | stopping | stopped | unknown
 | `alreadyRunning` | `start` 时发现本来就在跑（没有重复起） |
 | `wasRunning` | `restart` 之前是否真的在跑；`false` 表示只是补启动 |
 | `logFile` | 该组件的输出日志（启动类指令才有） |
-| `releaseId` | `stage` 的发布包 id，原样回带 |
+| `releaseId` | `stage` 的同步包 id，原样回带 |
 | `landed` / `deleted` / `skipped` | `stage`：写入、删除、跳过的文件数 |
 | `bytes` | `stage`：实际写盘字节数 |
 
@@ -354,10 +354,10 @@ running | starting | stopping | stopped | unknown
 | `start_timeout` | 等不到进程就绪 / 端口没监听 | 看 `logFile`；慢启动的调大 `start.timeoutMs` |
 | `spawn_failed` | 命令找不到或起不来 | 检查 `start.cmd` 与 PATH |
 | `log_failed` | 日志目录不可写 | 修 `logDir` 权限 |
-| `manifest_missing` | 共享上读不到 `<share>\manifest.json`（共享没挂上 / 权限 / 发布包被清了） | 在 98 上确认共享与发布包目录，重发 |
+| `manifest_missing` | 共享上读不到 `<share>\manifest.json`（共享没挂上 / 权限 / 同步包被清了） | 在 98 上确认共享与同步包目录，重发 |
 | `partial` | `stage` 有文件没落成（`message` 里带第一条原因，`errors` 最多 5 条） | 修权限/占用后重发；已落地的文件不重复写 |
 | `sha_mismatch` | 共享上的文件与 manifest 的 sha256 对不上（复制坏了 / 被改过） | 重新打包，别绕过校验 |
-| `bad_path` | manifest 里的路径越界或含非法字符 | 说明发布包有问题，查 98 侧打包 |
+| `bad_path` | manifest 里的路径越界或含非法字符 | 说明同步包有问题，查 98 侧打包 |
 | `no_local_root` | 该组件在本机没有 `localRoot` | 补配置后重发 hello |
 | `not_configured` | 本机配置里没有这个组件 | 主节点保存配置 → 重发 hello |
 | `inventory_failed` | 读进程表失败 | 看 agent 日志 |
@@ -459,9 +459,9 @@ TCP 那头以为还连着。只有「N 秒没收到任何字节」才能发现�
 | `POST` | `/api/ui/config/probe` | 只在主节点本机 stat 路径；其它机器返回「未探测」 |
 | `GET` | `/api/ui/nodes` | 各节点实时状态（M0）：由成员上报的观测推导，见 §4.1 |
 | `POST` | `/api/ui/task` | 下发指令（`start` / `stop` / `restart`），见下 |
-| `POST` | `/api/ui/stage` | 做发布包并让成员就地覆盖文件（M2），见下 |
-| `GET` | `/api/ui/releases` | 发布记录列表（摘要，最多 50 条） |
-| `GET` | `/api/ui/releases/{relId}` | 单次发布的**文件级明细**（见 §8.3） |
+| `POST` | `/api/ui/stage` | 做同步包并让成员就地覆盖文件（M2），见下 |
+| `GET` | `/api/ui/releases` | 同步记录列表（摘要，最多 50 条） |
+| `GET` | `/api/ui/releases/{relId}` | 单次同步的**文件级明细**（见 §8.3） |
 | `GET` | `/api/agent/stream` | 成员常驻 SSE（M0：只发 `hello` / `ping`） |
 | `POST` | `/api/agent/report` | 成员上报（M0：`hello` / `snapshot` / `ack` / `nack` / `probe`） |
 
@@ -488,7 +488,7 @@ TCP 那头以为还连着。只有「N 秒没收到任何字节」才能发现�
 | --- | --- | --- |
 | 400 | `bad_request` | 缺 `action` / `component` |
 | 400 | `bad_action` | `action` 不是 start/stop/restart |
-| 400 | `manual_node` | 目标是发布源（98），只能人工操作 |
+| 400 | `manual_node` | 目标是同步源（98），只能人工操作 |
 | 400 | `no_process` | `kind: asset` 的纯文件组件 |
 | 400 | `no_start` | 配置里没有 `start.cmd`（启动/重启） |
 | 404 | `unknown_node` / `not_configured` | 节点或组件不在配置里 |
@@ -500,7 +500,7 @@ TCP 那头以为还连着。只有「N 秒没收到任何字节」才能发现�
 
 #### `POST /api/ui/stage`
 
-把待发布区里勾选的文件复制到共享、写 `manifest.json`，再让每台目标机就地覆盖。**不启停进程。**
+把待同步区里勾选的文件复制到共享、写 `manifest.json`，再让每台目标机就地覆盖。**不启停进程。**
 
 ```json
 {
@@ -530,14 +530,14 @@ TCP 那头以为还连着。只有「N 秒没收到任何字节」才能发现�
 ```
 
 有节点失败时仍是 `200`，但 `ok:false`、`status` 为 `partial` / `failed`，`nodes.<id>.error` 给原因；
-**这批文件不会从待发布区移除**（不推进基线），修好后原样重发，已落地的文件会被重写一遍（幂等）。
+**这批文件不会从待同步区移除**（不推进基线），修好后原样重发，已落地的文件会被重写一遍（幂等）。
 
 | HTTP | code | 场景 |
 | --- | --- | --- |
 | 400 | `bad_request` / `not_in_pending` | 没选组件 / 组件不在清单里 |
 | 400 | `no_target` | 这些组件没有任何已部署的成员（成员 `localRoot` 都没填） |
 | 400 | `empty_selection` | 勾选和清单对不上，或只勾了删除项但没 `includeDeletes` |
-| 409 | `no_pending` | 待发布区是空的 |
+| 409 | `no_pending` | 待同步区是空的 |
 | 409 | `busy` | 上一次更新还没走完 |
 | 409 | `node_offline` | 有目标机不在线（不允许只发一半） |
 | 409 | `not_stopped` | 目标组件还在 `running` / `degraded` |
@@ -571,12 +571,12 @@ TCP 那头以为还连着。只有「N 秒没收到任何字节」才能发现�
 | `POST` | `/api/ui/release/rollback` | 回退某 set |
 | `GET` | `/api/ui/events?since=` | 审计流水 |
 
-### 8.3 发布记录：文件级明细（M2 已实现）
+### 8.3 同步记录：文件级明细（M2 已实现）
 
-「发布记录 → 详情」要回答两个问题：**这一版更新了哪些文件**、**什么时候落到每一台**。
+「同步记录 → 详情」要回答两个问题：**这一版更新了哪些文件**、**什么时候落到每一台**。
 所以 manifest 必须按文件记录时间，事后不重新扫描（重扫只能得到「现在」，得不到「当时」）。
 
-发布包在共享上（`manifest.json` 与 `GET /api/ui/releases/{relId}` 返回同一份内容）：
+同步包在共享上（`manifest.json` 与 `GET /api/ui/releases/{relId}` 返回同一份内容）：
 
 ```json
 {
@@ -605,7 +605,7 @@ TCP 那头以为还连着。只有「N 秒没收到任何字节」才能发现�
 }
 ```
 
-发布记录（`state/releases/<relId>.json`）在 manifest 之外多出执行结果：
+同步记录（`state/releases/<relId>.json`）在 manifest 之外多出执行结果：
 
 ```json
 {
@@ -637,10 +637,10 @@ TCP 那头以为还连着。只有「N 秒没收到任何字节」才能发现�
 - 没有逐文件 `detectedAt`：清单里只有整次扫描的 `createdAt`（`pending.createdAt` / `id`）。
 
 **状态**：`landed`（所有目标机都成功）/ `partial`（有的成有的败）/ `failed`（全败）。
-只有 `landed` 才推进基线、把文件从待发布区移除；`partial`/`failed` 原样保留，修好重发。
+只有 `landed` 才推进基线、把文件从待同步区移除；`partial`/`failed` 原样保留，修好重发。
 
 保留策略：`state/releases.json` 只留最近 50 条摘要，明细在 `state/releases/<relId>.json`；
-共享上的发布包按 `storage.keepReleases`（默认 5）滚动删除，删包不删记录（记录里的 `dir` 会指向已删目录）。
+共享上的同步包按 `storage.keepReleases`（默认 5）滚动删除，删包不删记录（记录里的 `dir` 会指向已删目录）。
 
 ---
 

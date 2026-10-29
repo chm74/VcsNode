@@ -30,11 +30,15 @@
       <span class="nav-badge" id="navAlertBadge">2</span>
     </button>
     <button class="nav-item" data-view="pending">
-      <span class="nav-dot"></span>待发布区
+      <span class="nav-dot"></span>待同步区
       <span class="nav-badge" id="navPendingBadge">94</span>
     </button>
     <button class="nav-item" data-view="releases">
-      <span class="nav-dot"></span>发布记录
+      <span class="nav-dot"></span>同步记录
+    </button>
+    <button class="nav-item" data-view="actions">
+      <span class="nav-dot"></span>启停记录
+      <span class="nav-badge warn" id="navActBadge" hidden></span>
     </button>
     <button class="nav-item" data-view="config">
       <span class="nav-dot"></span>配置
@@ -87,11 +91,11 @@
       </div>
     </section>
 
-    <!-- ══════════════ 待发布区 ══════════════ -->
+    <!-- ══════════════ 待同步区 ══════════════ -->
     <section class="view" id="view-pending">
       <div class="view-head">
-        <h1>待发布区</h1>
-        <p class="sub">扫描 98 的部署目录，与上一版比对。这是草稿，勾选后才进入发布。</p>
+        <h1>待同步区</h1>
+        <p class="sub">扫描 98 的部署目录，与上一版比对。这是草稿，勾选后才进入同步。</p>
       </div>
 
       <div class="scan-bar">
@@ -113,7 +117,7 @@
           <div class="comp-chips" id="compChips"></div>
 
           <div class="empty-state" id="pendingEmpty" hidden>
-            <div class="es-title">还没有可发布的变更</div>
+            <div class="es-title">还没有可同步的变更</div>
             <div class="es-text">点右上角「重新扫描」。第一次扫描会建立基线，之后每次扫描显示相对基线的改动。</div>
           </div>
 
@@ -131,11 +135,17 @@
 
         <aside class="draft-side">
           <div class="panel sticky">
-            <div class="panel-head"><h2>发布影响</h2></div>
+            <div class="panel-head"><h2>同步影响</h2></div>
             <dl class="kv" id="impactKv"></dl>
 
             <div class="confirm-block">
-              <div class="confirm-title">发布前确认</div>
+              <div class="confirm-title">目标节点</div>
+              <div id="nodePick" class="node-pick"></div>
+              <p class="hint" style="padding:6px 0 0">只给勾选的机器下发。没勾的会留在待同步区，等下次补齐（基线不会提前推进）。</p>
+            </div>
+
+            <div class="confirm-block">
+              <div class="confirm-title">同步前确认</div>
               <label class="check-row">
                 <input type="checkbox" id="ckDb">
                 <span>本次不含数据库结构变更<br><span class="muted small">（新增 DbSet / 建表需人工执行，vcsNode 不做）</span></span>
@@ -147,26 +157,87 @@
             </div>
 
             <div class="side-actions">
-              <button class="btn primary" id="btnStage" disabled>预发布</button>
-              <button class="btn" id="btnCommit" disabled title="预发布全部成功后才可切换">切换上线</button>
+              <button class="btn primary" id="btnStage" disabled>预同步</button>
+              <button class="btn" id="btnCommit" disabled title="预同步全部成功后才可切换">切换上线</button>
             </div>
-            <p class="hint">预发布只覆盖文件，组件必须已停止（否则会 409 拒绝）；改完再去组件抽屉里启动。
+            <p class="hint">预同步只覆盖文件，组件必须已停止（否则会 409 拒绝）；改完再去组件抽屉里启动。
               「切换上线」（停止→覆盖→启动一键）还没接，在 M3。</p>
           </div>
         </aside>
       </div>
     </section>
 
-    <!-- ══════════════ 发布记录 ══════════════ -->
+    <!-- ══════════════ 同步记录 ══════════════ -->
     <section class="view" id="view-releases">
       <div class="view-head">
-        <h1>发布记录</h1>
+        <h1>同步记录</h1>
         <p class="sub">每一版在各节点的落地状态。回退按 set 整体进行。</p>
       </div>
       <div class="panel">
         <div class="table-wrap">
           <table class="table" id="releaseTable"></table>
         </div>
+      </div>
+    </section>
+
+    <!-- ══════════════ 启停记录 ══════════════ -->
+    <section class="view" id="view-actions">
+      <div class="view-head">
+        <h1>启停记录</h1>
+        <p class="sub">成员机上进程的启动 / 停止 / 重启记录，含失败原因和退出码。数据来自各成员本地台账 <code class="inline">logs\actions-YYYYMMDD.jsonl</code>，保留最近 30 天。
+          <b>这是审计视图</b>：只回答「什么时候、在哪台、动了哪个组件、成没成、为什么失败」。</p>
+      </div>
+
+      <div class="stat-row" id="actionStats">
+        <div class="stat">
+          <div class="stat-k">今日启停</div>
+          <div class="stat-v" id="statToday">—</div>
+          <div class="stat-s">启动 + 停止 + 重启</div>
+        </div>
+        <div class="stat">
+          <div class="stat-k">近 30 天失败</div>
+          <div class="stat-v" id="statFail">—</div>
+          <div class="stat-s">启动超时 / 停不下来 / 拒绝</div>
+        </div>
+        <div class="stat">
+          <div class="stat-k">最近一次失败</div>
+          <div class="stat-v" id="statLastFail">—</div>
+          <div class="stat-s" id="statLastFailSub">时间 · 节点 · 组件</div>
+        </div>
+        <div class="stat">
+          <div class="stat-k">最近一次操作</div>
+          <div class="stat-v" id="statLast">—</div>
+          <div class="stat-s" id="statLastSub">时间 · 动作 · 组件</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>最近 30 天</h2>
+          <div class="head-tools">
+            <span class="chip small degraded" id="actionsMode" hidden></span>
+            <select class="select" id="actNodeFilter"><option value="">全部节点</option></select>
+            <select class="select" id="actCompFilter"><option value="">全部组件</option></select>
+            <select class="select" id="actKindFilter">
+              <option value="">全部动作</option>
+              <option value="start">启动</option>
+              <option value="stop">停止</option>
+              <option value="restart">重启</option>
+              <option value="stage">更新文件</option>
+              <option value="exit">异常退出</option>
+            </select>
+            <select class="select" id="actResultFilter">
+              <option value="">全部结果</option>
+              <option value="ok">成功</option>
+              <option value="fail">失败</option>
+            </select>
+            <button class="btn tiny ghost" id="btnActRefresh">刷新</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="actionTable"></table>
+        </div>
+        <div class="pager" id="actionPager"></div>
       </div>
     </section>
 
@@ -220,21 +291,22 @@
     <section class="view" id="view-events">
       <div class="view-head">
         <h1>事件</h1>
-        <p class="sub">所有指令与状态变化的审计流水，落盘为按天切分的 jsonl。</p>
+        <p class="sub">控制面事件流：连接/断开、组件状态变化、指令下发与回执。落盘在 master 的 <code class="inline">logs\events-YYYYMMDD.jsonl</code>，保留最近 30 天；每页 15 条。同步与文件级明细在「同步记录」。</p>
       </div>
       <div class="panel">
         <div class="panel-head">
-          <h2>最近 200 条</h2>
+          <h2>最近 30 天</h2>
           <div class="head-tools">
-            <select class="select" id="eventFilter">
-              <option value="">全部节点</option>
-              <option>98</option><option>207</option><option>145</option><option>149</option>
-            </select>
+            <span class="chip small degraded" id="eventsMode" hidden></span>
+            <select class="select" id="eventFilter"><option value="">全部节点</option></select>
+            <select class="select" id="eventActionFilter"><option value="">全部动作</option></select>
+            <button class="btn tiny ghost" id="btnEvRefresh">刷新</button>
           </div>
         </div>
         <div class="table-wrap">
           <table class="table" id="eventTable"></table>
         </div>
+        <div class="pager" id="eventPager"></div>
       </div>
     </section>
 

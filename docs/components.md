@@ -36,7 +36,7 @@
 
 ### 明确排除在同步/监控之外
 
-- **PostgreSQL（5432）**：系统依赖，但不属于「自动生成系统」发布单元，重启策略也不同。
+- **PostgreSQL（5432）**：系统依赖，但不属于「自动生成系统」同步单元，重启策略也不同。
 - **UE / CityEngine / QGIS / CesiumLab 本体**：外部安装软件，只同步脚本，不管理其进程。
 - **`Revit插件`**：装在设计人员客户端上，不在服务端。
 - **`SceneAutoApply.StateMigration`**：一次性迁移工具（只有一个 `Program.cs`），非常驻进程，不做同步/监控。
@@ -60,15 +60,15 @@
 | `shp_plants` | `node index.js` | 组件根 | 目录内配置 | 就地覆盖 + 重启 |
 | `shp_buildings` | `node index.js` | 组件根 | 同上 | 就地覆盖 + 重启 |
 | `workerhost` | `dotnet .\SceneAutomation.WorkerHost.dll` | 含 `appsettings.json` 的目录 | 同上（`ContentRootPath = AppContext.BaseDirectory`，注意与 cwd 的双重约束） | 新目录 + 重启 |
-| `mcpserver` | `dotnet .\SceneAutoApply.McpServer.dll --transport http --port {port}`（98=7077、149 覆盖成 7080） | 含 `appsettings.json` 的发布目录 | 目录内 `appsettings.json` + `Mcp__*` 环境变量 | 新目录 + 重启 |
+| `mcpserver` | `dotnet .\SceneAutoApply.McpServer.dll --transport http --port {port}`（98=7077、149 覆盖成 7080） | 含 `appsettings.json` 的同步目录 | 目录内 `appsettings.json` + `Mcp__*` 环境变量 | 新目录 + 重启 |
 
 三条由此推出的硬约束：
 
 1. **`dotnet xxx.dll` 不读 `launchSettings.json`**，webapi 的 `applicationUrl: http://*:3601`
    只在 `dotnet run` 时生效。必须显式设置 `ASPNETCORE_URLS`，否则默认只监听 `localhost:5000`。
 2. **配置按 cwd 解析**，不是按 DLL 目录。`appsettings.json` 必须和启动时的工作目录一致。
-   因此部署布局固定为：**发布目录 = `localRoot`，DLL 与 `appsettings.json` 同级平铺**
-   （`dotnet publish -o <发布目录>`），启动写 `dotnet .\X.dll`。
+   因此部署布局固定为：**同步目录 = `localRoot`，DLL 与 `appsettings.json` 同级平铺**
+   （`dotnet publish -o <同步目录>`），启动写 `dotnet .\X.dll`。
 3. **`start.cwd` 一律相对 `localRoot`**（`.` 或缺省 = `localRoot` 本身）。四台机器路径不同，
    在配置里写绝对路径只可能对一台有效。成员执行时的解析规则：
    `cwd = localRoot`（先做 `--remap` 后的实际路径）→ `cmd` 若含路径分隔符且是相对路径，按 `cwd` 解析 →
@@ -128,7 +128,7 @@
 
 **M2 的硬约束：`sources.<组件>` 必须和 98 的 `localRoot` 逐字相同。**
 
-预发布是「就地覆盖」，`rel` 路径按组件根拼到成员自己的 `localRoot` 上。所以扫描源必须是
+预同步是「就地覆盖」，`rel` 路径按组件根拼到成员自己的 `localRoot` 上。所以扫描源必须是
 98 **正在运行**的那份文件，而不是仓库里的源码 —— 否则会把 `.cs` 覆盖进 publish 目录，
 服务下次启动直接起不来。代码里用 `layout_mismatch` 拦住，不是靠人记得。
 
@@ -150,7 +150,7 @@
 三个必须知道的前提：
 
 1. **改完 `sources` 要重建基线**：`node bin\scan.mjs --init-baseline`。否则第一次扫描会把
-   整份产物目录当成「新增 N 个文件」，待发布区直接失控。
+   整份产物目录当成「新增 N 个文件」，待同步区直接失控。
 2. **`aigenerate` 没有 `sources`**：组件定义里有它（5231 端口），但没有任何 `sources` 条目，
    所以它不参与扫描 —— 想让它能发，得先补一条 `sources.aigenerate`。
 3. **全局 `exclude` 对产物目录同样生效**：`appsettings.json`、`nlog.config`、

@@ -132,7 +132,9 @@ components:
       cwd: "."
       env:
         # launchSettings 只对 dotnet run 生效；dotnet xxx.dll 必须显式给监听地址
-        ASPNETCORE_URLS: "http://0.0.0.0:3601"
+        # 用 {port} 占位符，按节点各自的 port 展开（98=3601、149=7080），别写死
+        # 注意：若本机 appsettings.json 里有 Kestrel:Endpoints，它会盖掉这个变量 —— 端口以本机为准
+        ASPNETCORE_URLS: "http://0.0.0.0:{port}"
     identify:
       name: dotnet.exe
       cmdlineIncludes: ["SceneAutoApply.dll"]
@@ -235,7 +237,7 @@ components:
       cmdlineIncludes: ["SceneAutoApply.McpServer"]
     health:
       type: tcp
-      port: 7077
+      port: "{port}"              # 别写死 7077：149 是 7081，写死会去探一个没人听的口
       timeoutMs: 3000
     localConfig: ["appsettings.json"]
     dependsOn: [webapi]
@@ -479,19 +481,22 @@ nodes:
         localRoot: 'D:\SceneAutomationWeb\chm-test\main-4e13932a-20261026-192440'
         port: 3334
         # port: 3333                 # TODO 待核对（同为生产网段，也可能用 3071）
+      # port 必须等于应用真实监听端口：149 的 appsettings.json 里 Kestrel 端点写死 127.0.0.1:7080
+      # （appsettings.json 属于 localConfig，永不同步；ASPNETCORE_URLS 会被 Kestrel:Endpoints 覆盖）
       webapi:         { localRoot: 'D:\SceneAutomationWorker\Releases\main-test\SceneAutoApply', port: 7080 }
+      # 本机 webapi 只监听 127.0.0.1，客户端可能走 127.0.0.1 或 ::1 —— 下面三条 health 不写 remoteHost，只按端口认
       generateclient:
         localRoot: 'D:\SceneAutomationWorker\Releases\main-test\GenerateClient'
         health:
           type: connection
-          remoteHost: 172.16.1.149 # 本机 webapi，不能用默认值 172.16.2.98
-          remotePort: 3601
+          remoteHost: null            # 只按端口认：本机可能走 127.0.0.1 或 ::1；base 默认是 172.16.2.98，必须显式置空
+          remotePort: 7080
       generatetool:
         localRoot: 'D:\SceneAutomationWorker\Releases\main-test\GenerateTool'
         health:
           type: connection
-          remoteHost: 172.16.1.149
-          remotePort: 3601
+          remoteHost: null            # 只按端口认：本机可能走 127.0.0.1 或 ::1；base 默认是 172.16.2.98，必须显式置空
+          remotePort: 7080
       tools:          { localRoot: 'D:\SceneAutomationV3\Tools' }    # Tools 路径已确认
       shp_plants:     { localRoot: 'D:\SceneAutomationV3\Tools\ShapefileTool.Plants.20230905' }
       shp_buildings:  { localRoot: 'D:\SceneAutomationV3\Tools\ShapefileTool.Buildings.20230905' }
@@ -499,9 +504,10 @@ nodes:
         localRoot: 'D:\SceneAutomationWorker\Releases\main-test\SceneAutomation.WorkerHost'
         health:                     # 本机 webapi
           type: connection
-          remoteHost: 172.16.1.149
-          remotePort: 3601
-      mcpserver:      { localRoot: 'D:\SceneAutomationWorker\Releases\main-test\SceneAutoApply.McpServer', port: 7080 }
+          remoteHost: null            # 只按端口认：本机可能走 127.0.0.1 或 ::1；base 默认是 172.16.2.98，必须显式置空
+          remotePort: 7080
+      # 7080 让给 webapi；mcpserver 的端口是我们用 --port {port} 传进去的，改配置就生效
+      mcpserver:      { localRoot: 'D:\SceneAutomationWorker\Releases\main-test\SceneAutoApply.McpServer', port: 7081 }
 
   172.16.1.207:
     id: node-207

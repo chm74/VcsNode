@@ -71,8 +71,7 @@ export async function findTarget(spec, inventory = null) {
   }
 
   // 端口是所有「我们的进程」共享的证据，配错端口就会指到邻居身上。
-  // 典型：149 上把 webapi.port 写成 7080，而 7080 是 mcpserver 的 —— locate() 只看
-  // 进程名（都是 dotnet.exe）就认了。这里再拿命令行对一次，对不上就不动。
+  // 典型：同一台机器上 webapi 和 mcpserver 都是 dotnet.exe，端口配错就会认错人。
   const includes = spec.identify?.cmdlineIncludes;
   if (loc.matchBy === 'port' && includes?.length && loc.proc?.cmd) {
     const cmd = String(loc.proc.cmd).toLowerCase();
@@ -223,7 +222,7 @@ function logTail(file, maxBytes = 4096, maxLines = 12) {
  *   - 配了端口的，端口在监听
  * 起不来时把日志尾巴带回去（工作目录错、dll 不在、端口被占，看日志最快）。
  */
-export async function startComponent(spec, component, { logDir, remaps = [], waitMs = null } = {}) {
+export async function startComponent(spec, component, { logDir, remaps = [], waitMs = null, onSpawn = null } = {}) {
   const t0 = Date.now();
   const done = (extra) => ({ ...extra, durationMs: Date.now() - t0 });
 
@@ -313,6 +312,11 @@ export async function startComponent(spec, component, { logDir, remaps = [], wai
   }
   child.unref();
 
+  // 交给调用方（agent）挂「自己退出」的监听：进程崩了要能记一条，不能等下一轮采样才发现
+  if (typeof onSpawn === 'function') {
+    try { onSpawn(child, { component, logFile, cmdline, cwd }); } catch { /* 回调出错不影响启动 */ }
+  }
+
   let exited = null;
   child.once('exit', (code, signal) => { exited = { code, signal }; });
   child.once('error', (e) => { exited = { code: null, signal: null, error: e.message }; });
@@ -363,12 +367,28 @@ export async function startComponent(spec, component, { logDir, remaps = [], wai
   }
 
   const tail = logTail(logFile);
+
+  // 超时最常见的两种原因：端口配错（应用在听别的口）或应用根本没监听。
+  // 直接把「这个进程实际在听什么」写进错误里，省得再去翻日志翻 netstat。
+  let hint = '';
+  try {
+    const inv2 = await readInventory().catch(() => null);
+    if (inv2) {
+      const loc2 = locate(spec, inv2);
+      const pid2 = loc2?.pid || child.pid;
+      const mine = inv2.listen.filter((e) => Number(e.pid) === Number(pid2));
+      hint = mine.length
+        ? `；进程 pid ${pid2} 实际在监听 ${mine.map((e) => `${e.addr}:${e.port}`).join('、')}`
+        : `；进程 pid ${pid2} 目前没有任何监听端口（还在初始化，或端口由应用自己的配置决定）`;
+    }
+  } catch { /* 拿不到就算了，别把错误信息搞崩 */ }
+
   return done({
     ok: false,
     code: 'start_timeout',
     message: `${timeoutMs}ms 内没等到 ${component} 就绪${
       spec.port ? `（端口 ${spec.port} ${portSeen ? '在监听，但认不到对应进程' : '还没监听'}）` : ''
-    }${tail ? `\n${tail}` : ''}`,
+    }${hint}${tail ? `\n${tail}` : ''}`,
     logFile,
     cwd,
     cmdline,
@@ -394,6 +414,8 @@ export async function restartComponent(spec, component, opts = {}) {
   return {
     ...started,
     wasRunning: stopped.ok === true,
+    // 主动停掉的那个 pid：调用方据此抑制「异常退出」记录（否则每次正常停止都会多一条假的 exit）
+    stoppedPid: stopped.ok ? stopped.pid : null,
     durationMs: Date.now() - t0,
   };
 }

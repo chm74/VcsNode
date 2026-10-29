@@ -33,10 +33,11 @@ import http from 'node:http';
 import os from 'node:os';
 
 import { readJson, writeJsonAtomic } from '../src/state.mjs';
-import { sampleSpecs, readInventory } from '../src/probe.mjs';
+import { sampleSpecs, readInventory, locate } from '../src/probe.mjs';
 import { stopComponent, startComponent, restartComponent } from '../src/proc.mjs';
 import { applyRelease } from '../src/sync.mjs';
 import { signRequest, PROTO } from '../src/agent-auth.mjs';
+import { createEventLog } from '../src/event-log.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -93,7 +94,7 @@ async function loadBootstrap() {
   if (!existsSync(file)) {
     throw new Error(
       `找不到引导配置 ${file}\n` +
-      `  从 config\\agent.bootstrap.example.json 复制一份，填 master / nodeId / secret / cacheDir`,
+      `  从 config\\agent.bootstrap.example.json 复制一份，填 master / nodeId / secret`,
     );
   }
   // 记事本 / PowerShell 写出来的 JSON 常带 BOM，JSON.parse 会直接报 Unexpected token
@@ -104,12 +105,13 @@ async function loadBootstrap() {
   } catch (e) {
     throw new Error(`${file} 不是合法 JSON：${e.message}（常见原因：结尾多余逗号、注释、中文引号）`);
   }
-  for (const k of ['master', 'nodeId', 'secret', 'cacheDir']) {
+  for (const k of ['master', 'nodeId', 'secret']) {
     if (!raw[k]) throw new Error(`${file} 缺字段 ${k}`);
   }
   const [host, portRaw] = String(raw.master).split(':');
   const port = Number(portRaw) || 47821;
-  const cacheDir = resolve(String(raw.cacheDir));
+  // cacheDir 可以不写：默认就用 agent 自己所在目录下的 state\
+  const cacheDir = raw.cacheDir ? resolve(String(raw.cacheDir)) : join(ROOT, 'state');
   return {
     file,
     host,
@@ -215,6 +217,95 @@ async function report(type, payload) {
     throw new Error(`上报失败 HTTP ${res.status} ${code} ${res.text.slice(0, 200)}`.trim());
   }
   return res.json;
+}
+
+/* ── 启停台账（本机 jsonl + 攒队列上报 98） ─────────────
+ *
+ * 两处都要写：
+ *   - 本机 logs\actions-YYYYMMDD.jsonl —— 98 连不上时也有痕迹，出问题能就地查
+ *   - 上报 98（type: action）—— 98 存 state\actions\，界面「启停记录」读那里
+ *
+ * 上报失败不丢：留在 outbox 里，每轮采样前重试；master 按 id 去重，重发安全。
+ */
+
+let actionLog = null;
+const outbox = [];
+let flushing = false;
+
+/** 主动启停期间的「退出」不算异常：按 pid 精确抑制（时间窗会误伤下一个任务里的真实崩溃） */
+const suppressPids = new Map();   // pid -> 抑制截止时间
+let suppressUntil = 0;            // 拿不到 pid 时的兜底：只在停/重启那一刻短开 5s
+
+function suppressPid(pid) { if (pid) suppressPids.set(Number(pid), Date.now() + 60000); }
+
+function isSuppressed(pid) {
+  const until = suppressPids.get(Number(pid));
+  if (until === undefined) return Date.now() < suppressUntil;
+  suppressPids.delete(Number(pid));
+  return Date.now() <= until;
+}
+
+function recordAction({ action, component, result, code, pid, durationMs, message, taskId }) {
+  const at = Date.now();
+  const rec = {
+    id: `${boot?.nodeId || 'agent'}-${at}-${Math.random().toString(36).slice(2, 8)}`,
+    at,
+    node: boot?.nodeId || '',
+    component: component || null,
+    action,
+    result: result === 'fail' ? 'fail' : 'ok',
+    code: code || null,
+    pid: pid ?? null,
+    durationMs: Number.isFinite(Number(durationMs)) ? Number(durationMs) : null,
+    message: String(message || '').slice(0, 300),
+    taskId: taskId || null,
+  };
+  try { actionLog?.append(rec); } catch { /* 写盘失败不影响业务 */ }
+  outbox.push(rec);
+  if (outbox.length > 500) outbox.splice(0, outbox.length - 500);
+  flushOutbox().catch(() => {});
+  return rec;
+}
+
+async function flushOutbox() {
+  if (flushing || !outbox.length || !st.connected) return;
+  flushing = true;
+  try {
+    while (outbox.length) {
+      await report('action', { record: outbox[0] });
+      outbox.shift();
+    }
+  } catch { /* 连不上：留着，下个周期再试 */ }
+  finally { flushing = false; }
+}
+
+/** 要停的进程是谁：先认出来，好把它后面的 exit 认成「我们自己停的」 */
+async function currentProcessPid(spec) {
+  try {
+    const inv = await readInventory();
+    return locate(spec, inv)?.pid ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** 进程自己退出（不是我们停的）→ 记一条，并马上刷新观测，矩阵尽快变红 */function watchChild(child, component, kind, taskId) {
+  const pid = child?.pid;
+  if (!pid) return;
+  child.once('exit', (code, signal) => {
+    if (st.stopping) return;
+    if (isSuppressed(pid)) return;   // 我们自己停的
+    recordAction({
+      action: 'exit',
+      component,
+      result: 'fail',
+      code: `exit_${code ?? '?'}`,
+      pid,
+      message: `进程自己退出 code=${code ?? '?'}${signal ? ` / ${signal}` : ''}（${kind === 'restart' ? '重启后' : '启动后'}）`,
+      taskId,
+    });
+    sampleAndReport({ force: true }).catch(() => {});
+  });
 }
 
 /* ── SSE ──────────────────────────────────────────────── */
@@ -498,6 +589,15 @@ async function onEvent(ev) {
       }
 
       const summary = `写入 ${r.landed} · 删除 ${r.deleted} · 跳过 ${r.skipped} · ${(r.bytes / 1024).toFixed(1)} KB`;
+      recordAction({
+        action: 'stage',
+        component: null,
+        result: r.ok ? 'ok' : 'fail',
+        code: r.ok ? null : 'partial',
+        durationMs: r.durationMs,
+        message: `${releaseId} · ${summary}`,
+        taskId,
+      });
       if (r.ok) {
         log(`已更新 ${releaseId}：${summary}（${r.durationMs}ms）`);
         await report('ack', {
@@ -541,15 +641,34 @@ async function onEvent(ev) {
     log(`收到 task ${taskId || ''} ${ACTIONS[kind].label} ${component}`);
     let r;
     try {
+      // 停 / 重启会杀进程：先把要杀的那个 pid 记下来，它的 exit 不算「异常退出」
+      if (kind !== 'start') {
+        const cur = await currentProcessPid(spec);
+        if (cur) suppressPid(cur);
+        else suppressUntil = Date.now() + 5000;
+      }
+      const onSpawn = (child) => watchChild(child, component, kind, taskId);
       if (kind === 'stop') r = await stopComponent(spec);
-      else if (kind === 'start') r = await startComponent(spec, component, { logDir: boot.logDir, remaps: args.remaps });
-      else r = await restartComponent(spec, component, { logDir: boot.logDir, remaps: args.remaps });
+      else if (kind === 'start') r = await startComponent(spec, component, { logDir: boot.logDir, remaps: args.remaps, onSpawn });
+      else r = await restartComponent(spec, component, { logDir: boot.logDir, remaps: args.remaps, onSpawn });
     } catch (e) {
       st.taskRunning = false;
       warn(`${ACTIONS[kind].label} ${component} 异常：${e.message}`);
+      recordAction({ action: kind, component, result: 'fail', code: 'error', message: e.message, taskId });
       await nack('error', e.message);
       return;
     }
+
+    recordAction({
+      action: kind,
+      component,
+      result: r.ok ? 'ok' : 'fail',
+      code: r.ok ? null : r.code,
+      pid: r.ok ? (r.pid ?? null) : null,
+      durationMs: r.durationMs,
+      message: r.ok ? (r.message || `已${ACTIONS[kind].label}`) : `${r.code || 'error'} · ${r.message || ''}`.trim(),
+      taskId,
+    });
 
     // 先把最新观测推给主节点，再回执：主节点一收到 ack，矩阵里就已经是终态，
     // 界面刷新时不会先看到「运行中 → 假活 → 已停止」的中间态。
@@ -641,6 +760,10 @@ async function main() {
 
   await loadCache();
 
+  // 启停台账：本机留一份（98 连不上时也能就地查），98 侧存 state\actions\
+  actionLog = createEventLog({ dir: boot.logDir, prefix: 'actions', keepDays: 30 });
+  const actionsLoaded = await actionLog.init();
+
   if (args.once) {
     if (!st.cfg) {
       log('本地没有缓存配置，向主节点取一次 hello…');
@@ -671,6 +794,7 @@ async function main() {
   log(`vcsNode agent ${AGENT_VERSION}  node=${boot.nodeId}  master=${boot.host}:${boot.port}  pid=${process.pid}`);
   log(`采样间隔 ${args.interval}ms · 心跳 ${HEARTBEAT_MS}ms · 缓存 ${boot.cacheDir}`);
   log(`服务日志 ${boot.logDir}\\<组件>.log`);
+  log(`启停台账 ${boot.logDir}\\actions-YYYYMMDD.jsonl（已载入 ${actionsLoaded} 条）`);
   log(`旧文件备份 ${boot.backupDir}\\<relId>\\<组件>\\<相对路径>`);
   log(boot.allowControl
     ? '控制模式：可执行启停与更新文件（allowControl: true）'
@@ -681,6 +805,7 @@ async function main() {
   const timer = setInterval(() => {
     // 没连上也没缓存时不采样（省得每 10s 打一次 PowerShell）
     if (!st.cfg && !st.connected) return;
+    flushOutbox().catch(() => {});
     sampleAndReport().catch((e) => warn(`采样异常：${e.message}`));
   }, args.interval);
   if (timer.unref) timer.unref();

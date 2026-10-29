@@ -13,7 +13,7 @@
 
 | 机器 | 角色 | 跑什么 |
 | --- | --- | --- |
-| `172.16.2.98` | 主节点 + 发布源 | `vcs-master`（含本机 agent）+ 全套业务组件 |
+| `172.16.2.98` | 主节点 + 同步源 | `vcs-master`（含本机 agent）+ 全套业务组件 |
 | `172.16.1.207` | 成员 | `vcs-agent` + web / webapi |
 | `172.16.1.145` | 成员 | `vcs-agent` + generateclient / generatetool / tools |
 | `172.16.1.149` | 成员 | `vcs-agent` + 全套业务组件 |
@@ -165,7 +165,7 @@ C:\vcsNode\
 
 **不要往成员上放**：`config\vcsnode.yaml`（配置只在 98 上有一份）、`ui\`、
 `bin\master.mjs`、`bin\scan.mjs`、`src\scan.mjs`、`src\ignore.mjs`、`src\config-edit.mjs`、
-`src\release.mjs`（发布包只在 98 上做）。
+`src\release.mjs`（同步包只在 98 上做）。
 成员不需要 YAML 解析器，也不需要打包逻辑 —— 组件定义由主节点在 `hello` 里下发（协议 §3.3），
 文件清单由共享上的 `manifest.json` 给（协议 §4.2）。
 
@@ -334,10 +334,10 @@ Get-Process -Id <刚才的 pid>                          # 应该报「找不到
 
 > **扫描源 = 98 实际运行目录（2026-10-28 已对齐）**：六个 dotnet/web 组件的 `sources` 已从源码目录
 > 改到 98 的 build 产物（`E:\SceneAutomationBuild\…`、`E:\nginx\html\dist`），和 98 的 `localRoot`
-> 逐字相同，所以 10 个组件里 9 个都能就地发布（`aigenerate` 没配 `sources`，不参与扫描）。
+> 逐字相同，所以 10 个组件里 9 个都能就地同步（`aigenerate` 没配 `sources`，不参与扫描）。
 >
 > **改完 `sources` 必须重建一次基线**：`node C:\vcsNode\bin\scan.mjs --init-baseline`。
-> 不重建的话，第一次扫描会把整份产物当「新增」，待发布区会冒出几千个文件。
+> 不重建的话，第一次扫描会把整份产物当「新增」，待同步区会冒出几千个文件。
 > 基线重建后第一次扫描也会慢一些（全量 sha256 一遍产物目录）。
 
 试点步骤（149 + `shp_buildings`，4001 端口）：
@@ -345,7 +345,7 @@ Get-Process -Id <刚才的 pid>                          # 应该报「找不到
 1. 抽屉里**停止** `shp_buildings`，等矩阵变「已停止」
 2. 98 上改一处文件 —— 拿 `D:\SceneAutomationV3\Tools\ShapefileTool.Buildings.20230905\` 里
    任意一个文件加一行注释最省事
-3. 页面 → 待发布区 → **重新扫描** → 看到这个文件 → 勾上 → 勾「本次不含数据库结构变更」→ **预发布**
+3. 页面 → 待同步区 → **重新扫描** → 看到这个文件 → 勾上 → 勾「本次不含数据库结构变更」→ **预同步**
 4. 预期 toast：`更新完成：1 个文件 · 12 B · 1/1 台已落地（0.1s），可以启动了`
 5. 成员上复核：
 
@@ -357,17 +357,17 @@ Get-ChildItem D:\SceneAutomationV3\Tools\ShapefileTool.Buildings.20230905\ -Recu
 ```
 
 6. 抽屉里**启动** → 矩阵变「运行中」，业务功能点一下确认没坏
-7. 发布记录页多一条 → 详情：三个时间点分开显示（98 改于 / 落地 / 发起 + 用时）+ 逐文件 sha256
+7. 同步记录页多一条 → 详情：三个时间点分开显示（98 改于 / 落地 / 发起 + 用时）+ 逐文件 sha256
 
 反面用例（都要**拒绝**或明确失败，不能悄悄改一半）：
 
 | 操作 | 预期 |
 | --- | --- |
-| 组件还在跑就点预发布 | `409 not_stopped`，文件不动 |
+| 组件还在跑就点预同步 | `409 not_stopped`，文件不动 |
 | `sources` 和 98 的 `localRoot` 不一致 | `409 layout_mismatch`，连共享都不写 |
 | 有目标机离线 | `409 node_offline`，一台都不发（不允许半套） |
 | 只勾删除项、没勾「我已确认删除项」 | `400 empty_selection` |
-| 共享没挂上 / 没读权限 | 成员 `nack manifest_missing` → 记录 `partial`，待发布区保留 |
+| 共享没挂上 / 没读权限 | 成员 `nack manifest_missing` → 记录 `partial`，待同步区保留 |
 | 共享上的 blob 被改过 | 成员 `sha_mismatch`，**不落地**，目标文件保持原样 |
 | 落地时文件被占用（服务又被起起来了） | `partial`，已落地的保留，重发会重写（幂等） |
 
@@ -483,7 +483,7 @@ schtasks /Run /TN vcsNodeAgent
 | 手动停一个不重要的组件，再启动 | 一个采样周期内（默认 10s）状态跟上 |
 | 断开 207 的网线 10s | 45s 内变 `node-offline`（主节点靠「有没有上报」判，不靠 socket） |
 
-**验收不通过就不要进第 4 步（发布）。** 状态都看不准，发布更不可控。
+**验收不通过就不要进第 4 步（同步）。** 状态都看不准，同步更不可控。
 
 ---
 
@@ -546,14 +546,14 @@ Get-CimInstance Win32_Process |
 # 停（/T 不可省，否则留下 python 子进程继续写 Task.json）
 taskkill /PID <pid> /T /F
 
-# 起：工作目录必须是发布目录（dotnet .\X.dll 按 cwd 读 appsettings.json）
+# 起：工作目录必须是同步目录（dotnet .\X.dll 按 cwd 读 appsettings.json）
 Set-Location D:\SceneAutomationWorker\Releases\main-test\webapi
 dotnet .\SceneAutoApply.dll
 ```
 
 ### 9.3 扫描（变更清单，只读）
 
-界面上点「待发布区 → 重新扫描」，等价于：
+界面上点「待同步区 → 重新扫描」，等价于：
 
 ```powershell
 node C:\vcsNode\bin\scan.mjs            # 比对基线，写 state\pending.json
@@ -570,7 +570,7 @@ node C:\vcsNode\bin\scan.mjs --json     # 只输出 JSON，给脚本用
 node C:\vcsNode\bin\scan.mjs --init-baseline
 ```
 
-重建之后清单会变空，已发布的差异就此「认账」。慎用。
+重建之后清单会变空，已同步的差异就此「认账」。慎用。
 耗时：一万个文件约几十秒（每次都全量 sha256）。扫描期间被占用的文件记一条失败，
 不影响其余文件。
 
@@ -592,42 +592,77 @@ node bin\master.mjs --port 47830 `
 ### 9.4 发一次版（M2：停 → 更新文件 → 起）
 
 M2 只做「把改后的文件覆盖到成员」，不自动停/起（那是 M3 的「切换上线」）。
-所以一次发布是手工三段，每段都能单独确认：
+所以一次同步是手工三段，每段都能单独确认：
 
 ```
 1. 98 上改东西（就地改 98 正在用的目录，不要再手工拷到别的机器）
-2. 界面 → 待发布区 → 重新扫描
+2. 界面 → 待同步区 → 重新扫描
      结果按组件汇总 + 文件级明细（路径、sha256、大小、归因组件）
 3. 勾选要发的文件
      · 默认只勾新增/修改，删除项要单独勾 + 勾「我已确认 N 个删除项」
      · 勾「本次不含数据库结构变更」（vcsNode 不执行建表，必须人工确认）
+     · 右侧「目标节点」按需取消勾选 —— 只发一台是允许的，见 §9.4.1
 4. 先停止目标组件（组件抽屉 → 停止 → 再点一次确认）
      · 不停也能点，但服务端会 409 not_stopped —— 对着正在跑的服务覆盖 dll 只会得到半新半旧
-5. 待发布区 → 预发布
+5. 待同步区 → 预同步
      · 98 把勾选的文件复制到 \\172.16.2.98\Tools\_vcs\releases\<relId>\ 并写 manifest.json
-     · 每台目标机从共享只读拉取 → 备份旧文件到 C:\vcsNode\backup\<relId>\ → 校验 sha256 → 就地覆盖
-     · 全部成功：这批文件从待发布区消失（基线推进到新内容）
-     · 有任何一台失败：记录标 partial，待发布区原样保留，修好重发（幂等）
+     · 只发给勾选的目标机：它们从共享只读拉取 → 备份旧文件到 D:\vcsNode\backup\<relId>\ → 校验 sha256 → 就地覆盖
+     · 全部勾选的机器都成功：提示里写「N/N 台已落地」
+     · 有任何一台失败：记录标 partial，待同步区原样保留，修好重发（幂等）
+     · 文件从待同步区消失的条件是**所有声明了该组件的节点**都落地了这份内容（见 §9.4.1）
 6. 组件抽屉 → 启动 → 矩阵变「运行中」
-7. 发布记录 → 详情：逐文件明细 + 三个时间点（98 改于 / 落地 / 发起 + 用时）
+7. 同步记录 → 详情：逐文件明细 + 三个时间点（98 改于 / 落地 / 发起 + 用时）+「下发范围」
 ```
 
 > 2~3 步只读；第 5 步写共享 + 写成员文件；第 4、6 步才动进程。
-> 预发布**不会**帮你停服务，也不会帮你起 —— 顺序错了会立刻 409，不会硬来。
+> 预同步**不会**帮你停服务，也不会帮你起 —— 顺序错了会立刻 409，不会硬来。
+
+#### 9.4.1 只发一部分节点（灰度 / 先发 149）
+
+目标节点由配置推导：`nodes.<ip>.components.<组件>.localRoot` 填了，才算这台机器的目标。
+界面「待同步区 → 目标节点」把候选机器列出来，**默认全选**，取消勾选的就是这次不发。
+
+```
+☑ 149  已停止          ← 只留这台
+☐ 145  运行中 · 要先停  ← 取消勾选 → 本次不发
+```
+
+规则（服务端强制的，不是界面约束）：
+
+| 行为 | 说明 |
+|---|---|
+| 前置检查 | 只检查**勾选的**机器：必须在线、组件必须已停 |
+| 下发 | 只给勾选的机器发 `stage`，没勾的连指令都收不到 |
+| 基线 | **不提前推进**：只有「配置里声明的全部目标节点都落地了同一份内容」才写进基线、才从待同步区移除 |
+| 待同步区 | 没发齐的文件留着，组标题显示 `已发 149 · 待发 145`；补齐后自动消失 |
+| 记录 | 每批一个 `relId`，详情里「下发范围」写清 `requested / skipped` |
+
+落地进度存在 `state\landed.json`（按 `组件/相对路径 → 内容哈希 → 已落地的节点`）。
+**不放进 `pending.json`**：每次扫描会整体重写 pending，进度会丢；而且内容一变（哈希变）旧进度必须作废。
+
+```powershell
+# 命令行等价：只发 149
+$body = @{ components=@('shp_buildings'); nodes=@('149'); includeDeletes=$false } | ConvertTo-Json
+Invoke-RestMethod -Uri http://127.0.0.1:47821/api/ui/stage -Method POST -ContentType 'application/json' -Body $body
+```
+
+> 只发 149、不再发 145 会怎样？那批文件就**一直留在待同步区**（基线没推进）。
+> 这正是想要的效果 —— 不会出现「145 悄悄落后、扫描还看不出来」。
+> 真的决定永不发 145，就把该机 `localRoot` 置空（改成 `null`），它就不再是目标。
 
 ### 9.5 回退（M2 人工）
 
 M2 没有一键回退（M3 才有）。现在回退 = 从成员本地备份拷回去，再启动：
 
 ```powershell
-# 在目标机上（relId 从发布记录详情里抄）
+# 在目标机上（relId 从同步记录详情里抄）
 $rel = 'rel-20261028-152954-ppzg'
 $root = 'D:\SceneAutomationV3\Tools\ShapefileTool.Buildings.20230905'
 robocopy "C:\vcsNode\backup\$rel\shp_buildings" $root /E /R:1 /W:1
 ```
 
 - 备份目录结构和 `localRoot` 一致（`<relId>\<组件>\<相对路径>`），整目录拷回去就还原了；
-  发布时删掉的文件，备份里有，拷回去等于恢复
+  同步时删掉的文件，备份里有，拷回去等于恢复
 - 拷回去之后按 §9.2 启停
 - **拷完再启动**：文件被运行中的进程占着时拷不进去（`partial` 也不会硬写）
 
@@ -669,6 +704,34 @@ Restart-ScheduledTask -TaskName vcsNode-master     # 或手工重启进程
 配置页上的「探测全部节点」现在只能检查**主节点本机**的路径是否真的存在；
 其余三台要等 agent 接上才探得了。看到「其余 3 台未探测」是正常的，不是失败。
 
+### 9.7 事件页（最近 30 天）
+
+记的是**控制面事件**（不是业务日志），由主节点产生，7 种动作：
+
+| 动作 | 什么时候出现 |
+| --- | --- |
+| `connect` / `disconnect` | 成员连上 / 心跳超时或连接断开 |
+| `state` | 组件状态变化（`webapi running→stopped`）；到 `degraded/crashed/orphan` 记警告 |
+| `task` | 98 往成员推指令（`start webapi` / `stage rel-…`） |
+| `ack` / `nack` | 成员执行完回执 / 拒绝（`not_stopped`、`busy`…） |
+| `probe` | 配置页点「探针」的汇总 |
+
+```powershell
+# 分页查（每页 15 条，按时间倒序）
+curl "http://127.0.0.1:47821/api/ui/events?page=1&size=15"
+curl "http://127.0.0.1:47821/api/ui/events?node=149&action=nack&page=1&size=15"
+```
+
+| 项 | 规则 |
+| --- | --- |
+| 落盘位置 | `C:\vcsNode\logs\events-YYYYMMDD.jsonl`（98 本地日期切天，用 `--log-dir` 可改） |
+| 保留 | 最近 **30 天**；启动时 + 跨天各清一次过期文件 |
+| 内存 | 启动时读回 30 天记录（上限 5 万条），查询/分页在内存里做 |
+| 界面 | 每页 15 条，可按节点、动作筛选；时间带日期（`10-29 10:06:33`） |
+| 重启 master | 事件**不会丢**（这一点和「同步记录」不同：同步记录在 `state\`，事件在 `logs\`） |
+
+> 事件只记「动作」，不记文件明细。要知道某次同步动了哪些文件，看 `state\releases\<relId>.json`。
+
 ---
 
 ## 10. 故障处置
@@ -678,14 +741,15 @@ Restart-ScheduledTask -TaskName vcsNode-master     # 或手工重启进程
 | 界面上某台一直 `node-offline` | 该机 `node -v`、`Get-Service` 里 agent 是否在跑、`Test-NetConnection 98 -Port 47821` | agent 没起来；账号密码改过导致服务启动失败；网络 |
 | 所有机器都离线 | 98 的 47821 是否在听 | master 崩了 / 端口被占 |
 | `stage` 一直卡住 | 共享可达性、吞吐 | 445 不通；大文件在慢链路上 |
-| `stage` 报 `manifest_missing` | 成员上 `dir \\172.16.2.98\Tools\_vcs\releases` | 共享没挂上 / agent 账号读不到 / 发布包已被滚动删掉 |
+| `stage` 报 `manifest_missing` | 成员上 `dir \\172.16.2.98\Tools\_vcs\releases` | 共享没挂上 / agent 账号读不到 / 同步包已被滚动删掉 |
 | `stage` 报 `sha_mismatch` | 共享上的 blob 是否被人手工改过 | 有人在共享目录里直接编辑文件 |
-| `stage` 报 `layout_mismatch` | `sources.<组件>` 与 98 的 `localRoot` 是否同一个目录 | 扫描源指向源码目录，M2 不允许把源码铺进发布目录 |
+| `stage` 报 `layout_mismatch` | `sources.<组件>` 与 98 的 `localRoot` 是否同一个目录 | 扫描源指向源码目录，M2 不允许把源码铺进同步目录 |
 | `stage` 报 `partial` 且错误是 `EPERM`/`EBUSY` | 目标组件是不是又被起起来了 | 先停服务再发；已落地的文件不用重做 |
 | 组件起不来，日志报找不到配置 | 启动 cwd | `appsettings.json` 不在 cwd；见 `architecture.md` §3.5 |
 | 组件起来了但客户端不在线 | `SignalRUrl` | 指向了不存在的 webapi（145 指向自己就是典型） |
+| 启停报「30000ms 内没等到…就绪（端口 X 还没监听）」，但应用日志已 `Application started` | 应用日志里的 `Now listening on` | 配置 `port` ≠ 应用真实端口（被 `Kestrel:Endpoints` 改的），见 §10.2 |
 | 端口被占 | `Get-NetTCPConnection -LocalPort <port>` | 上次没杀干净，标 `orphan` |
-| 发布后功能异常 | 本次 commit 是否含数据库变更 | 表没建（如 `PreviewBlock*` 三张表） |
+| 同步后功能异常 | 本次 commit 是否含数据库变更 | 表没建（如 `PreviewBlock*` 三张表） |
 
 ### 10.1 常用排查命令
 
@@ -706,6 +770,35 @@ Get-NetTCPConnection -RemotePort 3601 -State Established
 Get-Content C:\vcsNode\logs\agent.log -Tail 50
 ```
 
+### 10.2 端口口径：`port` 必须等于「应用真实监听端口」
+
+vcsNode 的 `components.<c>.port` / `nodes.<ip>.components.<c>.port` **只是探针期望值**
+（启动就绪判据 + 端口归属认进程 + 健康探测），它**不会**改变应用的监听端口。
+
+应用的监听端口由它自己决定，按优先级：
+
+1. `appsettings.json` 里的 `Kestrel:Endpoints`（最高，**会盖掉** `ASPNETCORE_URLS`）
+2. 代码里的 `UseUrls(...)`
+3. `ASPNETCORE_URLS` / `--urls`（我们 `start.env` 里给的就是这个，只在 1、2 都没写时生效）
+
+所以**判断端口的依据只有一条：启动日志里那行 `Now listening on:`**：
+
+```
+Now listening on: http://127.0.0.1:7080     ← 配置里 port 就写 7080
+```
+
+典型症状与处理：
+
+| 症状 | 原因 | 处理 |
+| --- | --- | --- |
+| 启停报 `30000ms 内没等到 <组件> 就绪（端口 X 还没监听）`，但日志显示 `Application started` 且端口是 Y | 配置的 port 和应用实际端口不一致 | 把 port 改成 Y（**改配置，不要去改应用**） |
+| 改了 `ASPNETCORE_URLS` 但端口没变 | 本机 `appsettings.json` 里有 `Kestrel:Endpoints` | 同上；`appsettings.json` 属于 `localConfig`，各机独立、永不同步 |
+| 组件显示「运行中」但健康检查失败 | `health.type: connection` 的 `remoteHost` 写错 | 应用只绑 `127.0.0.1` 时，客户端可能走 `127.0.0.1` 或 `::1` → 把 `remoteHost` 置 `null`，只按 `remotePort` 认 |
+
+> 判定小抄：`netstat -ano | findstr :<端口>` 看谁在听；`Get-NetTCPConnection -LocalPort <端口> -State Listen` 看绑定地址
+> （`127.0.0.1` = 只有本机连得上，`0.0.0.0` = 全网可达）。
+> 排查顺序：**日志里的 `Now listening on` → 配置里的 `port` → 两者对齐**，不要去猜。
+
 ---
 
 ## 11. 文件位置
@@ -715,14 +808,15 @@ Get-Content C:\vcsNode\logs\agent.log -Tail 50
 | vcsNode 程序 | `C:\vcsNode\` |
 | 主节点配置 | `C:\vcsNode\config\vcsnode.yaml` |
 | 成员引导配置 | `C:\vcsNode\agent.bootstrap.json` |
-| 运行时状态 | `C:\vcsNode\state\{pending,baseline,nodes,config-revision}.json`、`state\releases.json`（最近 50 条摘要）、`state\releases\<relId>.json`（单次明细） |
+| 运行时状态 | `C:\vcsNode\state\{pending,baseline,landed,nodes,config-revision}.json`、`state\releases.json`（最近 50 条摘要）、`state\releases\<relId>.json`（单次明细） |
+| 落地台账 | `C:\vcsNode\state\landed.json`：`组件/相对路径 → {marker, nodes}`，记录哪台机器上已经是哪份内容（只发部分节点时靠它判断「发齐了没有」） |
 | agent 本地缓存 | `C:\vcsNode\state\node-config.json`（主节点下发的组件定义）、`agent.json`（lastSeq） |
 | 成员本地备份 | `C:\vcsNode\backup\<relId>\<组件>\<相对路径>`（**不在共享上** —— 共享对成员只读；bootstrap 的 `backupDir` 可改） |
-| 事件流水 | `C:\vcsNode\logs\events-YYYYMMDD.jsonl` |
+| 事件（控制面） | `C:\vcsNode\logs\events-YYYYMMDD.jsonl`：按天切分、append-only，**保留最近 30 天**（启动时和跨天自动清过期文件）。master 启动时把 30 天内的记录读回内存，界面每页 15 条。要追溯「哪批文件发给了谁」，仍看 `state\releases\<relId>.json`（同步记录，含逐文件明细与三个时间点） |
 | agent 日志 | `C:\vcsNode\logs\agent.log` |
 | 成员上的服务日志 | `C:\vcsNode\logs\<组件>.log`（每个组件一个，append；bootstrap 的 `logDir` 可改） |
 | 共享分发区 | `\\172.16.2.98\Tools\_vcs\releases\<relId>\{manifest.json,files\…}`（98 写，成员只读；按 `storage.keepReleases` 滚动删） |
-| 备份（98 自己那份） | M2 不做 —— 98 是发布源，人工操作，不归 vcsNode 管 |
+| 备份（98 自己那份） | M2 不做 —— 98 是同步源，人工操作，不归 vcsNode 管 |
 
 ### 11.1 `state\nodes.json`（M0）
 
@@ -781,8 +875,8 @@ vcsNode 必须能「随时拔掉」而不影响业务，这是设计约束之一
 | 3 | 首次全量同步的耗时与带宽评估 | 第 4 步实现后 |
 | 4 | 数据库变更的人工闸门清单 | 与开发约定 |
 | 5 | ~~跨网段 SMB 实测~~ | ✅ 已完成：207 / 145 / 149 均可读 `\\172.16.2.98\Tools` |
-| 6 | 五个组件的 `sources` 改到实际运行目录（web / webapi / generateclient / generatetool / workerhost / mcpserver） | 现场核对 98 的发布目录；改完才能用 M2 更新它们 |
-| 7 | `secondaryMappings`（`CE_Template\startup.py`、`AutoCE.py`）在 M2 没有实现 | 下一版；现在这两个文件只在扫描里出现，发布不会写到第二处 |
+| 6 | 五个组件的 `sources` 改到实际运行目录（web / webapi / generateclient / generatetool / workerhost / mcpserver） | 现场核对 98 的同步目录；改完才能用 M2 更新它们 |
+| 7 | `secondaryMappings`（`CE_Template\startup.py`、`AutoCE.py`）在 M2 没有实现 | 下一版；现在这两个文件只在扫描里出现，同步不会写到第二处 |
 | 8 | 成员备份的保留策略（现在不自动清，`backup\<relId>\` 会一直涨） | 运维定容量；或 M3 按 `keepReleases` 一起滚 |
 | 9 | 一键「切换上线」（停 → 更新 → 起）与一键回退 | M3 |
 | 10 | 逐文件 `landedAt`（现在是节点级完成时刻） | M3 连 commit 一起细化 |
