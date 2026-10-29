@@ -732,6 +732,35 @@ curl "http://127.0.0.1:47821/api/ui/events?node=149&action=nack&page=1&size=15"
 
 > 事件只记「动作」，不记文件明细。要知道某次同步动了哪些文件，看 `state\releases\<relId>.json`。
 
+### 9.8 启停记录（最近 30 天）
+
+事件页记的是「控制面在干什么」，启停记录记的是**每台机器上真的执行了什么**：
+
+| 动作 | 什么时候出现 |
+| --- | --- |
+| `start` / `stop` / `restart` | 界面上点启动 / 停止 / 重启（成功或失败都记） |
+| `stage` | 成员把一批文件落到本地（写入 / 删除 / 跳过 / 字节数） |
+| `exit` | **不是我们停的**，进程自己没了（崩溃、被人从任务管理器杀掉），带退出码 |
+| `lost` | 预留（成员整体失联时补记），目前不产生 |
+
+```powershell
+# 分页（每页 15 条，倒序，附带顶部统计卡）
+curl "http://127.0.0.1:47821/api/ui/actions?page=1&size=15"
+curl "http://127.0.0.1:47821/api/ui/actions?node=149&component=shp_buildings&action=stop&result=fail"
+```
+
+| 项 | 规则 |
+| --- | --- |
+| 谁写 | **成员自己写**：本机 `logs\actions-YYYYMMDD.jsonl`（98 连不上时也有痕迹）+ 逐条上报 98 |
+| 98 落盘 | `state\actions\YYYYMMDD.jsonl`：按天切分、append-only、保留最近 30 天 |
+| 去重 | 每条带 `id`，成员重发同一条时 98 直接丢弃（`duplicate: true`），不会多一行 |
+| 上报失败 | 留在 agent 内存队列里，每轮采样重试（最多 500 条），不会因为一次网络抖动丢记录 |
+| 主动停止 | 我们杀的进程不算 `exit`：停之前先按 pid 记下来，那颗进程的退出事件直接忽略 |
+| 统计卡 | 今日启停次数 / 近 30 天失败数 / 最近一次失败 / 最近一次操作 |
+| 重启 master | 记录**不会丢**（和事件一样在盘上，启动时读回） |
+
+> 98 自己不记：主节点由人工操作，不归 vcsNode 管（`selfManage: false`），所以页面上只有 149 / 207 / 145 三台。
+
 ---
 
 ## 10. 故障处置
@@ -814,6 +843,7 @@ Now listening on: http://127.0.0.1:7080     ← 配置里 port 就写 7080
 | 成员本地备份 | `C:\vcsNode\backup\<relId>\<组件>\<相对路径>`（**不在共享上** —— 共享对成员只读；bootstrap 的 `backupDir` 可改） |
 | 事件（控制面） | `C:\vcsNode\logs\events-YYYYMMDD.jsonl`：按天切分、append-only，**保留最近 30 天**（启动时和跨天自动清过期文件）。master 启动时把 30 天内的记录读回内存，界面每页 15 条。要追溯「哪批文件发给了谁」，仍看 `state\releases\<relId>.json`（同步记录，含逐文件明细与三个时间点） |
 | agent 日志 | `C:\vcsNode\logs\agent.log` |
+| 启停台账 | 98：`state\actions\YYYYMMDD.jsonl`（成员上报汇总，保留 30 天）；成员：`logs\actions-YYYYMMDD.jsonl`（本机一份，`logDir` 可改） |
 | 成员上的服务日志 | `C:\vcsNode\logs\<组件>.log`（每个组件一个，append；bootstrap 的 `logDir` 可改） |
 | 共享分发区 | `\\172.16.2.98\Tools\_vcs\releases\<relId>\{manifest.json,files\…}`（98 写，成员只读；按 `storage.keepReleases` 滚动删） |
 | 备份（98 自己那份） | M2 不做 —— 98 是同步源，人工操作，不归 vcsNode 管 |

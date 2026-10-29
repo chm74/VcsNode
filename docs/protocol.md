@@ -382,6 +382,46 @@ running | starting | stopping | stopped | unknown
 }
 ```
 
+### 4.5 action（启停台账）
+
+成员每次真执行了启动 / 停止 / 重启 / 落文件，都会**主动上报一条**（不是主节点问）：
+主节点按 `id` 去重后落 `state\actions\YYYYMMDD.jsonl`，界面「启停记录」读它。
+成员本机同时写一份 `logs\actions-YYYYMMDD.jsonl`。
+
+```json
+{
+  "node": "node-149",
+  "type": "action",
+  "sentAt": 1761450031000,
+  "payload": {
+    "record": {
+      "id": "node-149-1761450031000-a1b2c3",
+      "at": 1761450031000,
+      "node": "node-149",
+      "component": "shp_buildings",
+      "action": "start",
+      "result": "ok",
+      "code": null,
+      "pid": 8812,
+      "durationMs": 4529,
+      "message": "已启动",
+      "taskId": "t-0007"
+    }
+  }
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `action` | `start` / `stop` / `restart` / `stage` / `exit` / `lost`（`lost` 预留，暂不产生） |
+| `result` | `ok` / `fail`（失败时 `code` 带原因，如 `exit_1`、`still_alive`、`timeout`） |
+| `id` | 幂等键；成员重发同一条时主节点返回 `{ok:true, duplicate:true}` 并不写盘 |
+| `pid` | 执行后的进程 pid（`stop` 是刚被杀掉的 pid，`stage` 为 `null`） |
+| `durationMs` | 这条动作花了多久（`stop` 含等待退出，`start` 含等端口/认进程） |
+
+> `exit` 是**进程自己退出**（崩溃、被人从任务管理器杀掉）。我们主动停的进程不算 ——
+> 停之前成员先把 pid 记进抑制表，那颗进程的 exit 直接忽略，所以正常停止不会留假告警。
+
 ---
 
 ## 5. 序号与抵达语义
@@ -462,8 +502,33 @@ TCP 那头以为还连着。只有「N 秒没收到任何字节」才能发现�
 | `POST` | `/api/ui/stage` | 做同步包并让成员就地覆盖文件（M2），见下 |
 | `GET` | `/api/ui/releases` | 同步记录列表（摘要，最多 50 条） |
 | `GET` | `/api/ui/releases/{relId}` | 单次同步的**文件级明细**（见 §8.3） |
+| `GET` | `/api/ui/actions` | 启停记录（分页 + 筛选 + 顶部统计，见下） |
 | `GET` | `/api/agent/stream` | 成员常驻 SSE（M0：只发 `hello` / `ping`） |
-| `POST` | `/api/agent/report` | 成员上报（M0：`hello` / `snapshot` / `ack` / `nack` / `probe`） |
+| `POST` | `/api/agent/report` | 成员上报（`hello` / `snapshot` / `ack` / `nack` / `probe` / `action`） |
+
+#### `GET /api/ui/actions`
+
+```powershell
+curl "http://127.0.0.1:47821/api/ui/actions?page=1&size=15&node=149&component=shp_buildings&action=stop&result=fail"
+```
+
+```json
+{
+  "ok": true, "days": 30,
+  "total": 19, "page": 1, "size": 15, "pages": 2,
+  "stats": {
+    "today": 14, "fail": 1,
+    "lastFail": { "ts": "2026-10-29T10:40:35+08:00", "node": "node-149", "component": "demo", "action": "exit", "code": "exit_1", "message": "进程自己退出 code=1" },
+    "last":     { "ts": "2026-10-29T10:48:38+08:00", "node": "node-149", "component": "demo", "action": "start" }
+  },
+  "items": [ { "id": "node-149-…", "at": 1761450031000, "ts": "2026-10-29T10:47:43+08:00", "node": "node-149",
+               "component": "demo", "action": "start", "result": "ok", "code": null, "pid": 26616,
+               "durationMs": 4746, "message": "已启动", "taskId": "t-0007" } ]
+}
+```
+
+`size` 默认 15、上限 200；`page` 越界会被夹到 `1..pages`；`node` 认 `149` 和 `node-149` 两种写法
+（写 `149` 也能查到，筛选不会因为前缀不同而空掉）。
 
 #### `POST /api/ui/task`
 
