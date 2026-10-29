@@ -1,0 +1,18 @@
+# 运行时产物：程序自动生成，各机内容不同，不入库
+
+# state/：master 的运行时状态（节点注册表、配置 revision、同步台账、启停台账…）
+# 说明见 state/README.md，字段格式见 docs/runbook.md §11
+state/*
+!state/README.md
+
+# logs/：组件 stdout/stderr 与事件流水（agent 侧 logs\actions-YYYYMMDD.jsonl）
+logs/
+
+# config/backup/：每次保存配置自动生成的时间戳备份，数量会一直增长
+config/backup/
+
+# 本机引导文件：含 master 地址、nodeId、cluster.secret，只在各机本地存在
+config/agent.bootstrap.json
+
+# 本地克隆日志（历史遗留）
+clone.log

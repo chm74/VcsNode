@@ -284,11 +284,11 @@ vcsNode/
 │   ├── runbook.md          部署、验收、日常操作、故障处置
 │   ├── ui.md               界面说明
 │   └── archive/            完整论证与被否决方案
-├── state/                  运行时：baseline.json / pending.json / landed.json /
-│                            nodes.json / config-revision.json / releases/ / actions/
-├── logs/                   master 事件流水 events-*.jsonl + 各组件服务日志
+├── state/                  运行时状态（自动生成，不入库）：
+│                            baseline.json / pending.json / landed.json / nodes.json /
+│                            config-revision.json / releases/ / actions/
+├── logs/                   运行时日志（自动生成，不入库）：events-*.jsonl + 各组件服务日志
 ├── tools/                  辅助脚本（smb-probe.ps1、serve-ui.mjs 等）
-├── clone.log
 └── README.md
 ```
 
@@ -308,6 +308,9 @@ vcsNode/
 | `state/releases/` | 同步记录（摘要 + 文件级 manifest） |
 | `state/actions/` | 启停台账（保留 30 天） |
 | `logs/events-*.jsonl` | 事件流水（保留 30 天） |
+
+> 以上全部是运行时产物：自动创建、各机不同、不入库（见 `.gitignore` 与
+> [`state/README.md`](state/README.md)）。缺失时按默认值重建，清理后重新扫描一次即可。
 
 ### 7.2 HTTP 接口
 
