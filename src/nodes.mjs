@@ -71,6 +71,8 @@ export class NodeRegistry {
         remoteAddr: null,
         hostname: null,
         agentVersion: null,
+        // 成员自报的控制权限：observe / stage / full（老 agent 不报 = observe）
+        control: def.role === 'source' ? 'full' : 'observe',
         uptimeSec: null,
         configRevision: null,
         lastSeq: 0,
@@ -97,6 +99,7 @@ export class NodeRegistry {
         connectedAt: s.connectedAt ?? null,
         hostname: s.hostname ?? null,
         agentVersion: s.agentVersion ?? null,
+        control: s.control || (n.role === 'source' ? 'full' : 'observe'),
         uptimeSec: s.uptimeSec ?? null,
         configRevision: s.configRevision ?? null,
         lastSeq: s.lastSeq ?? 0,
@@ -183,6 +186,7 @@ export class NodeRegistry {
     if (!n) return null;
     n.hostname = payload.host || n.hostname;
     n.agentVersion = payload.agentVersion ?? n.agentVersion;
+    if (payload.control) n.control = String(payload.control);
     n.uptimeSec = payload.uptimeSec ?? n.uptimeSec;
     n.configRevision = payload.configRevision ?? n.configRevision;
     n.lastSeq = payload.lastSeq ?? n.lastSeq;
@@ -197,6 +201,7 @@ export class NodeRegistry {
     const t = this.now();
     n.uptimeSec = payload.uptimeSec ?? n.uptimeSec;
     n.agentVersion = payload.agentVersion ?? n.agentVersion;
+    if (payload.control) n.control = String(payload.control);
     n.configRevision = payload.configRevision ?? n.configRevision;
     n.lastSeq = payload.lastSeq ?? n.lastSeq;
     if (payload.host) n.hostname = payload.host;
@@ -575,9 +580,13 @@ export class NodeRegistry {
         lastReport: n.lastSeenAt ? hhmmss(n.lastSeenAt) : '—',
         lastSeenAgoSec: seenAgo,
         agentVersion: n.agentVersion,
+        control: n.control || 'observe',
+        controlLabel: { observe: '只读', stage: '可同步', full: '可启停' }[n.control] || '只读',
         configRevision: n.configRevision,
         note: online
-          ? `${running} 运行 · ${bad} 异常 · ${stopped} 已停${n.agentVersion ? ` · agent ${n.agentVersion}` : ''}`
+          ? `${running} 运行 · ${bad} 异常 · ${stopped} 已停${n.agentVersion ? ` · agent ${n.agentVersion}` : ''}${
+            n.control && n.control !== 'full' ? ` · ${n.control === 'stage' ? '可同步，不能启停' : '只读'}` : ''
+          }`
           : (seenAgo === null ? '从未连上' : `控制面断开 ${fmtDuration(seenAgo)}`),
         tone: !online ? 'alert' : (bad ? 'warn' : ''),
       });

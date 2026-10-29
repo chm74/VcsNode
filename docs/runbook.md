@@ -162,8 +162,15 @@ C:\vcsNode\
 ```
 
 **文件必须照放**（`agent.mjs` 顶部就 import 了 `proc.mjs` 和 `sync.mjs`，缺了直接起不来）。
-想保持只读就把 `agent.bootstrap.json` 里的 `allowControl` 去掉或写 `false` ——
-那样任何 task 一律回 `nack control_disabled`，一个进程都不会动、一个文件都不会写。
+**控制权限三档**（写在每台的 `agent.bootstrap.json` 里，管那一台）：
+
+| 写法 | 档位 | 能做什么 |
+| --- | --- | --- |
+| `"allowControl": "observe"`（或不写 / `false`） | 只读 | 只采样上报。收更新文件、启停一律 `nack control_disabled` |
+| `"allowControl": "stage"` | 半控 | 能收更新文件（备份 + sha256 校验），启停仍 `nack` |
+| `"allowControl": "full"`（或老写法 `true`） | 全控 | 启停 + 收文件 |
+
+老写法 `true` / `false` 继续有效，等价于 `full` / `observe`。
 
 **不要往成员上放**：`config\vcsnode.yaml`（配置只在 98 上有一份）、`ui\`、
 `bin\master.mjs`、`bin\scan.mjs`、`src\scan.mjs`、`src\ignore.mjs`、`src\config-edit.mjs`、
@@ -190,7 +197,7 @@ notepad C:\vcsNode\agent.bootstrap.json
 #   nodeId       : "node-145"        ← 每台不同
 #   secret       : 与主节点 cluster.secret 一致
 #   cacheDir     : "C:\\vcsNode\\state"
-#   allowControl : true              ← 不加就是只读，启停与更新文件一律 nack
+#   allowControl : "stage"            ← observe / stage / full（老写法 true=false 也认）
 #   logDir       : "C:\\vcsNode\\logs"     ← 可选，默认是 cacheDir 的上一级 + logs
 #   backupDir    : "C:\\vcsNode\\backup"   ← 可选，更新文件前的旧文件备份
 ```
@@ -226,11 +233,11 @@ chcp 65001                                    # 中文乱码时先切 UTF-8 代�
 正常输出：
 
 ```
-10:12:05 [agent] vcsNode agent 0.1.4-m2  node=node-149  master=172.16.2.98:47821  pid=5320
+10:12:05 [agent] vcsNode agent 0.1.5-m2  node=node-149  master=172.16.2.98:47821  pid=5320
 10:12:05 [agent] 采样间隔 10000ms · 心跳 30000ms · 缓存 C:\vcsNode\state
 10:12:05 [agent] 服务日志 C:\vcsNode\logs\<组件>.log
 10:12:05 [agent] 旧文件备份 C:\vcsNode\backup\<relId>\<组件>\<相对路径>
-10:12:05 [agent] 控制模式：可执行启停与更新文件（allowControl: true）
+10:12:05 [agent] 控制权限：全控（可启停，也可收更新文件）（allowControl: "full"）
 10:12:05 [agent] 连接 172.16.2.98:47821 since=0
 10:12:06 [agent] 已连接 172.16.2.98:47821 node=node-149 configRevision=0
 10:12:07 [agent] 配置 rev=0 组件 9 个：web, webapi, generateclient, ...
@@ -264,8 +271,8 @@ curl http://127.0.0.1:47821/api/ui/nodes
 2. 节点卡片里该机器 `在线`，且有 `运行 / 异常 / 已停` 计数
 3. 给它点开任意组件，PID 与 `--inventory` 里看到的一致
 4. **故意停掉 agent**（Ctrl-C），5 秒内页面变成 `离线`
-5. 页面上**没有**任何动作能真正执行 —— 只读模式（没写 `allowControl: true`）下点停止会报
-   `control_disabled`，不会动进程；要能停见 §6.5
+5. 页面上**没有**任何动作能真正执行 —— 只读档（`allowControl: "observe"` / 不写 / `false`）下
+   点停止会报 `control_disabled`，不会动进程；`stage` 档能收文件但不能启停；要能启停见 §6.5
 
 第 3 条是 M0 唯一真正重要的验收：**认对了进程**。
 如果某个组件显示 `未观测` / `orphan`，先看 `notes` 里写的原因，
@@ -273,10 +280,10 @@ curl http://127.0.0.1:47821/api/ui/nodes
 
 ### 6.5 启停验收（M1）
 
-先确认 `agent.bootstrap.json` 里有 `"allowControl": true`，重启 agent，日志里应出现：
+先确认 `agent.bootstrap.json` 里的 `allowControl` 是 `"full"`（老写法 `true`），重启 agent，日志里应出现：
 
 ```
-控制模式：可执行启停与更新文件（allowControl: true）
+控制权限：全控（可启停，也可收更新文件）（allowControl: "full"）
 服务日志 C:\vcsNode\logs\<组件>.log
 旧文件备份 C:\vcsNode\backup\<relId>\<组件>\<相对路径>
 ```
@@ -316,7 +323,7 @@ Get-Process -Id <刚才的 pid>                          # 应该报「找不到
 | 启动一个端口已被占用（孤儿端口）的组件 | `port_busy` |
 | 启动一个配置里没有 `start.cmd` 的组件 | 主节点直接 `400 no_start` |
 | 启动后进程立刻退出（dll 不存在、配置错） | `exited`，`message` 里带日志尾巴 |
-| agent 里没写 `allowControl` | `control_disabled` |
+| agent 的 `allowControl` 是 `observe` / `stage` | `control_disabled`（说明里写明是哪一档、缺什么） |
 | agent 没连上 | `node_offline`（不会排队等着） |
 
 > **149 上先修一个配置错误再试点**：`nodes.172.16.1.149.components.webapi.port` 现在是 `7080`，
@@ -777,7 +784,7 @@ curl "http://127.0.0.1:47821/api/ui/actions?node=149&component=shp_buildings&act
 | `stage` 报 `layout_mismatch` | `sources.<组件>` 与 98 的 `localRoot` 是否同一个目录 | 扫描源指向源码目录，M2 不允许把源码铺进同步目录 |
 | `stage` 报 `partial` 且错误是 `EPERM`/`EBUSY` | 目标组件是不是又被起起来了 | 先停服务再发；已落地的文件不用重做 |
 | 组件起不来，日志报找不到配置 | 启动 cwd | `appsettings.json` 不在 cwd；见 `architecture.md` §3.5 |
-| GenerateClient / GenerateTool 立即退出，栈在 `SetConsoleOutputEncoding` | 成员 agent 是否已升级到 0.1.4-m2，`src\win-console.mjs` 是否就位 | 旧版 detached 启动没有有效控制台；见 §10.3 |
+| GenerateClient / GenerateTool 立即退出，栈在 `SetConsoleOutputEncoding` | 成员 agent 是否已升级到 0.1.5-m2，`src\win-console.mjs` 是否就位 | 旧版 detached 启动没有有效控制台；见 §10.3 |
 | 组件起来了但客户端不在线 | `SignalRUrl` | 指向了不存在的 webapi（145 指向自己就是典型） |
 | 启停报「30000ms 内没等到…就绪（端口 X 还没监听）」，但应用日志已 `Application started` | 应用日志里的 `Now listening on` | 配置 `port` ≠ 应用真实端口（被 `Kestrel:Endpoints` 改的），见 §10.2 |
 | 端口被占 | `Get-NetTCPConnection -LocalPort <port>` | 上次没杀干净，标 `orphan` |
@@ -840,7 +847,7 @@ Now listening on: http://127.0.0.1:7080     ← 配置里 port 就写 7080
 Windows 的 `DETACHED_PROCESS` 会使业务进程没有可用控制台；GenerateClient / GenerateTool
 入口的编码设置因此失败。这发生在业务配置读取和 SignalR 连接之前。
 
-从 agent **0.1.4-m2** 起，Windows `dotnet` 进程由 `src\win-console.mjs` 用
+从 agent **0.1.5-m2** 起，Windows `dotnet` 进程由 `src\win-console.mjs` 用
 `CREATE_NEW_CONSOLE + SW_HIDE` 启动：有有效控制台，窗口隐藏，标准输出和错误直接写原组件日志。
 启动桥返回真实业务 PID 并转交退出码；停止仍按真实 PID 执行 `taskkill /T /F`，
 重启仍先停后起。agent 退出后业务进程继续运行。
@@ -855,7 +862,7 @@ foreach ($relativePath in @('bin\agent.mjs', 'src\proc.mjs', 'src\win-console.mj
 }
 ```
 
-再按该机原来的计划任务或服务方式启动 agent。页面应显示 `agent 0.1.4-m2`；
+再按该机原来的计划任务或服务方式启动 agent。页面应显示 `agent 0.1.5-m2`；
 依次启动 GenerateClient / GenerateTool，检查 PID、组件日志及到 webapi 的连接。
 无需覆盖业务 DLL、源码、`appsettings.json` 或 `agent.bootstrap.json`。
 

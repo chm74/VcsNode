@@ -9,14 +9,14 @@
 /* ══════════════════ mock 数据 ══════════════════ */
 
 let NODES = [
-  { id: '98',  ip: '172.16.2.98',  role: '主节点 · 同步源', online: true,
+  { id: '98',  ip: '172.16.2.98',  role: '主节点 · 同步源', online: true, control: 'full', controlLabel: '可启停',
     uptime: '6 天 4 小时', lastReport: '10:41:02', note: '本机 agent 兼管 8 个组件' },
-  { id: '149', ip: '172.16.1.149', role: '成员', online: false,
+  { id: '149', ip: '172.16.1.149', role: '成员', online: false, control: 'full', controlLabel: '可启停',
     uptime: '—', lastReport: '10:36:51',
     note: '控制面连接已断开 4 分钟', tone: 'alert' },
-  { id: '207', ip: '172.16.1.207', role: '成员', online: true,
+  { id: '207', ip: '172.16.1.207', role: '成员', online: true, control: 'stage', controlLabel: '可同步',
     uptime: '3 天 11 小时', lastReport: '10:41:01', note: 'set-a 后端所在机' },
-  { id: '145', ip: '172.16.1.145', role: '成员', online: true,
+  { id: '145', ip: '172.16.1.145', role: '成员', online: true, control: 'stage', controlLabel: '可同步',
     uptime: '1 天 2 小时', lastReport: '10:40:58',
     note: '1 个组件假活：generateclient 未连上 207:3601', tone: 'warn' },
 ];
@@ -99,6 +99,13 @@ const STATE_LABEL = {
   running: '运行中', degraded: '假活', busy: '忙', crashed: '异常退出',
   orphan: '孤儿', stopped: '已停止', offline: '离线', 'node-offline': '离线',
   unknown: '未观测',
+};
+
+/* 成员控制权限（bootstrap 里的 allowControl）：决定界面能按哪些按钮 */
+const CONTROL_UI = {
+  observe: '只读（只观测）',
+  stage: '可同步（不能启停）',
+  full: '可启停',
 };
 
 const QUEUE = [
@@ -479,8 +486,11 @@ function openDrawer(compId, nodeId) {
   $('#drawerSub').textContent = `${node.ip} · 状态由主节点判定（成员只上报观测值）`;
 
   const isAsset = c.kind === 'asset';
-  const canStart = !isLocal && !isAsset && ['stopped', 'crashed', 'orphan'].includes(cell.state);
-  const canStop  = !isLocal && !isAsset && ['running', 'busy', 'degraded', 'orphan'].includes(cell.state);
+  // 控制权限由成员自己的 bootstrap 决定：observe 什么都不能，stage 只能收文件
+  const control = node?.control || 'observe';
+  const canControl = !isLocal && control === 'full';
+  const canStart = canControl && !isAsset && ['stopped', 'crashed', 'orphan'].includes(cell.state);
+  const canStop  = canControl && !isAsset && ['running', 'busy', 'degraded', 'orphan'].includes(cell.state);
 
   const connRemote = cell.conn?.remote
     || (cell.health?.detail || '').match(/\d+\.\d+\.\d+\.\d+:\d+/)?.[0]
@@ -551,7 +561,11 @@ function openDrawer(compId, nodeId) {
         ? '同步源由人工操作，控制面不下发启停指令。'
         : isAsset
           ? '纯文件组件没有进程，停止/启动对它没有意义。'
-          : '停止 / 重启要点两次确认；启动一下就发。服务输出见成员上的 logs\\<组件>.log。'}</p>
+          : control !== 'full'
+            ? `node-${nodeId} 的控制权限是 ${CONTROL_UI[control] || control}${
+              control === 'stage' ? '：能收更新文件，不能启停。要启停请把这台的 allowControl 改成 "full" 后重启 agent。' : '：不收更新文件，也不能启停。'
+            }`
+            : '停止 / 重启要点两次确认；启动一下就发。服务输出见成员上的 logs\\<组件>.log。'}</p>
     </div>`;
 
   DRAWER_CTX = { comp: compId, node: nodeId, isLocal };
@@ -823,21 +837,26 @@ function refreshPendingState() {
   // 否则会出现「上次只发了 149，这次勾了别的组件却还在偷偷只发 149」。
   const candidates = [...new Set(comps.flatMap((c) => targets[c] || []))].sort();
   const key = candidates.join(',');
+  // 只读成员（observe）连文件都不收：默认不勾，界面上也点不动
+  const usable = candidates.filter((id) => (NODES.find((n) => n.id === id)?.control || 'observe') !== 'observe');
   if (key !== candidateKey) {
     candidateKey = key;
-    chosenNodes = new Set(candidates);
+    chosenNodes = new Set(usable);
   }
-  for (const id of [...chosenNodes]) if (!candidates.includes(id)) chosenNodes.delete(id);
+  for (const id of [...chosenNodes]) if (!usable.includes(id)) chosenNodes.delete(id);
   renderNodePick(candidates, comps);
 
   const picked = candidates.filter((id) => chosenNodes.has(id));
   const rest = candidates.filter((id) => !chosenNodes.has(id));
   const bytes = sel.filter((f) => f.action !== 'D').reduce((a, f) => a + (f.sizeBytes || 0), 0);
+  const isRo = (id) => (NODES.find((n) => n.id === id)?.control || 'observe') === 'observe';
+  const roRest = rest.filter(isRo);
+  const skipRest = rest.filter((id) => !isRo(id));
 
   $('#impactKv').innerHTML = `
     <dt>目标节点</dt><dd>${picked.join(' · ') || '—（一个都没勾）'}${
-      rest.length ? `<br><span class="muted small">本次不发：${rest.join('、')}</span>` : ''
-    }</dd>
+      skipRest.length ? `<br><span class="muted small">本次不发：${skipRest.join('、')}</span>` : ''
+    }${roRest.length ? `<br><span class="muted small">只读不收：${roRest.join('、')}（allowControl: observe）</span>` : ''}</dd>
     <dt>涉及组件</dt><dd>${comps.join(' · ') || '—'}</dd>
     <dt>落地方式</dt><dd>就地覆盖（先备份，再校验 sha256）</dd>
     <dt>传输量</dt><dd>${fmtSize(bytes)}</dd>
@@ -860,18 +879,23 @@ function renderNodePick(candidates, comps) {
     const cell = comps.map((c) => MATRIX[c]?.[id]).find((x) => x && x.state) || null;
     const node = NODES.find((n) => n.id === id);
     const online = node ? node.online : !!cell;
+    const control = node?.control || 'observe';
+    const readOnly = control === 'observe';
     let label = cell ? (cell.label || cell.state) : (online ? '在线' : '离线');
     let cls = 'np-muted';
     if (!online) {
       label = '离线';
+    } else if (readOnly) {
+      cls = 'np-warn';
+      label = `${label} · 只读，不收文件`;
     } else if (cell && (cell.state === 'running' || cell.state === 'degraded')) {
       cls = 'np-warn';
       label = `${cell.label || cell.state} · 要先停`;
     } else if (cell && cell.state === 'stopped') {
       cls = 'np-ok';
     }
-    return `<label class="check-row">
-      <input type="checkbox" data-node="${id}" ${chosenNodes.has(id) ? 'checked' : ''}>
+    return `<label class="check-row" ${readOnly ? 'title="这台是只读成员（allowControl: observe），预同步会被拒绝"' : ''}>
+      <input type="checkbox" data-node="${id}" ${chosenNodes.has(id) && !readOnly ? 'checked' : ''} ${readOnly ? 'disabled' : ''}>
       <span><b>${id}</b> <span class="small ${cls}">${label}</span></span>
     </label>`;
   }).join('');
@@ -974,6 +998,8 @@ function applyNodes(payload) {
     lastReport: n.lastReport || '—',
     note: n.note || '',
     tone: n.tone || '',
+    control: n.control || 'observe',
+    controlLabel: n.controlLabel || '只读',
   }));
 
   const matrix = {};
@@ -1928,7 +1954,7 @@ function actTime(e) {
 /* 失败码 → 人话。只解释「为什么没做成 / 为什么这是失败的」，不猜业务原因。 */
 const ACT_CODE_HINT = {
   busy: '成员上一条指令还没执行完（或正在跑长任务），这次指令没有执行。稍后重试。',
-  control_disabled: '本机 bootstrap 没有 allowControl: true，agent 处于只读模式，拒绝执行。',
+  control_disabled: '这台成员的控制权限不够：observe 只采样、stage 只收文件；执行闸在成员自己的 bootstrap（allowControl），改完要重启 agent。',
   not_running: '要停的进程本来就不在，这条指令没有产生副作用。',
   not_ours: '按 identify 找不到「自己的」进程，agent 拒绝操作（避免杀错）。',
   identify_mismatch: '端口上的进程命令行对不上，agent 不敢停。核对 identify / 端口配置。',

@@ -41,11 +41,34 @@ import { createEventLog } from '../src/event-log.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-const AGENT_VERSION = '0.1.4-m2';
+const AGENT_VERSION = '0.1.5-m2';
 const DEFAULT_SAMPLE_MS = 10_000;
 const HEARTBEAT_MS = 30_000;      // 没变化也每 30s 报一次，主节点才知道「还活着」
 const READ_TIMEOUT_MS = 45_000;   // 这么长时间没收到任何字节 → 判定链路死了
 const BACKOFF = [1000, 2000, 5000, 10_000, 30_000];
+
+/* 控制权限三档（写在哪台机器的 agent.bootstrap.json 里，就只管那一台）：
+     observe  只采样上报：不收更新文件，也不启停
+     stage    可收更新文件（备份 + sha256 校验），启停仍拒绝
+     full     再加上启停 / 重启
+   兼容老写法：true = full，false 或不写 = observe */
+const CONTROL_MODES = ['observe', 'stage', 'full'];
+const CONTROL_ALIASES = [...CONTROL_MODES, 'true', 'false', 'sync', 'update', 'readonly', 'read-only'];
+const CONTROL_TEXT = {
+  observe: '只读（只采样上报，收文件与启停都拒绝）',
+  stage: '半控（可收更新文件，启停仍拒绝）',
+  full: '全控（可启停，也可收更新文件）',
+};
+
+function parseControlMode(raw) {
+  if (raw === true) return 'full';
+  if (raw === false || raw === undefined || raw === null) return 'observe';
+  const s = String(raw).trim().toLowerCase();
+  if (s === 'true' || s === 'full') return 'full';
+  if (s === 'stage' || s === 'sync' || s === 'update') return 'stage';
+  if (s === 'false' || s === 'observe' || s === 'readonly' || s === 'read-only') return 'observe';
+  return 'observe';   // 写错就按最保守的来，启动横幅里会把原值打出来
+}
 
 /* ── 参数 ─────────────────────────────────────────────── */
 
@@ -116,8 +139,11 @@ async function loadBootstrap() {
     file,
     host,
     port,
-    // 只有显式写 allowControl: true 才执行启停指令；只读部署不带这一项
-    allowControl: raw.allowControl === true,
+    // 只有显式写 allowControl 才执行指令；三档见 CONTROL_TEXT
+    control: parseControlMode(raw.allowControl),
+    // 老字段保留：true 才代表「能启停」
+    allowControl: parseControlMode(raw.allowControl) === 'full',
+    controlRaw: raw.allowControl ?? null,
     nodeId: String(raw.nodeId),
     secret: String(raw.secret),
     cacheDir,
@@ -475,6 +501,8 @@ async function sampleAndReport({ force = false } = {}) {
   const payload = {
     host: os.hostname(),
     agentVersion: AGENT_VERSION,
+    // 主节点/界面靠这个知道这台能做什么（observe / stage / full）
+    control: boot.control,
     uptimeSec: Math.round(process.uptime()),
     configRevision: cfg.revision ?? null,
     lastSeq: st.seq,
@@ -543,11 +571,6 @@ async function onEvent(ev) {
       }
     };
 
-    if (!boot.allowControl) {
-      warn(`收到 task ${kind}/${component}，但本地是只读模式，拒绝执行`);
-      await nack('control_disabled', '本机 bootstrap 没有 allowControl: true，agent 只观测不执行');
-      return;
-    }
     if (st.taskRunning) {
       await nack('busy', '上一条指令还在执行，稍后重试');
       return;
@@ -555,6 +578,11 @@ async function onEvent(ev) {
 
     /* ── 更新文件（M2）：不启停进程，只按 manifest 覆盖/删除文件 ── */
     if (kind === 'stage') {
+      if (boot.control === 'observe') {
+        warn(`收到 task stage，但本机控制权限是 observe，拒绝执行`);
+        await nack('control_disabled', '本机控制权限为 observe（只观测）：不收更新文件，也不启停');
+        return;
+      }
       const p = t.params || {};
       const releaseId = String(p.releaseId || '');
       const share = String(p.share || '');
@@ -630,6 +658,13 @@ async function onEvent(ev) {
     };
     if (!ACTIONS[kind]) {
       await nack('unsupported', `不认识的指令 ${kind || '(空)'}，只支持 ${Object.keys(ACTIONS).join(' / ')}`);
+      return;
+    }
+    if (boot.control !== 'full') {
+      warn(`收到 task ${kind}/${component}，但本机控制权限是 ${boot.control}，拒绝执行`);
+      await nack('control_disabled', boot.control === 'stage'
+        ? '本机控制权限为 stage（收更新文件，不启停）：要启停请改成 allowControl: "full" 后重启 agent'
+        : '本机控制权限为 observe（只观测）：不收更新文件，也不启停');
       return;
     }
     if ((spec.kind || 'service') === 'asset') {
@@ -796,9 +831,10 @@ async function main() {
   log(`服务日志 ${boot.logDir}\\<组件>.log`);
   log(`启停台账 ${boot.logDir}\\actions-YYYYMMDD.jsonl（已载入 ${actionsLoaded} 条）`);
   log(`旧文件备份 ${boot.backupDir}\\<relId>\\<组件>\\<相对路径>`);
-  log(boot.allowControl
-    ? '控制模式：可执行启停与更新文件（allowControl: true）'
-    : '控制模式：只读（bootstrap 里加 allowControl: true 才会执行启停与更新文件）');
+  log(`控制权限：${CONTROL_TEXT[boot.control]}（allowControl: ${JSON.stringify(boot.controlRaw)}）`);
+  if (typeof boot.controlRaw === 'string' && !CONTROL_ALIASES.includes(String(boot.controlRaw).trim().toLowerCase())) {
+    warn(`allowControl 写的是 ${JSON.stringify(boot.controlRaw)}，不认识，已按最保守的 observe 处理；可选 observe / stage / full（或 true / false）`);
+  }
 
   startStream();
 

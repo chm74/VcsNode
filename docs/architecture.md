@@ -671,8 +671,8 @@ AutomationUE5.3/…           → 组件 tools（纯文件，不重启）
 > 尚未实现：`commit` / `probe` 指令、`release-switch` 的构建与切指针、一键回退、
 > 清单的勾选落盘（`PATCH`，现在勾选只存在界面内存里）、配置回退（`config/rollback`）、
 > `secondaryMappings`（一个源文件写到第二处）。
-> 只读模式（bootstrap 没写 `allowControl: true`）的 agent 收到 `task` 会明确回 `nack(control_disabled)`，
-> 不静默丢弃 —— 否则界面会一直等 ack。
+> 控制权限由成员自己的 `allowControl` 决定（`observe` / `stage` / `full`）：权限不足时收到 `task`
+> 会明确回 `nack(control_disabled)`，不静默丢弃 —— 否则界面会一直等 ack。主节点在发指令前也会先挡一道。
 
 ---
 

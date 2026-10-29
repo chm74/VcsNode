@@ -157,6 +157,7 @@ data: {"seq":42,"kind":"stop","component":"webapi","timeoutMs":30000}
 
 **约束**：
 
+- 能不能执行由**成员自己的** `agent.bootstrap.json → allowControl` 决定，三档：`observe`（只采样上报，`start`/`stop`/`restart`/`stage` 全拒）、`stage`（只收文件，启停仍拒）、`full`（全放开）；老写法 `true`/`false` 等价 `full`/`observe`。执行闸在成员侧，主节点只是提前挡一道。
 - `kind` 与 `component` 必须存在于该节点的配置里，否则回 `nack`（`not_configured`）。
 - 主节点不接受成员上报的自由命令；同步源（`role: source`，即 98）一律 `400 manual_node`，不通过控制面启停。
 - `id` 由主节点生成，成员必须原样带在 `ack` / `nack` 的 `taskId` 里 —— 主节点靠它把回执对上在等的那次请求。
@@ -229,6 +230,7 @@ data: {"seq":42,"kind":"stop","component":"webapi","timeoutMs":30000}
     "uptimeSec": 3600,
     "configRevision": 7,
     "lastSeq": 41,
+    "control": "stage",
     "components": [
       {
         "id": "generateclient",
@@ -254,6 +256,9 @@ running | starting | stopping | stopped | unknown
 ```
 
 主节点据此推导 `node-offline / crashed / orphan / degraded`。
+
+`control` 是这台成员自己的控制权限（`observe` / `stage` / `full`），主节点原样转给界面：
+`GET /api/ui/nodes` 每个节点多两个字段 `control` / `controlLabel`，界面据此决定启停按钮能不能按。
 
 #### 4.1.1 M0 实际字段（比上面多出来的部分）
 
@@ -339,7 +344,7 @@ running | starting | stopping | stopped | unknown
 
 | code | 含义 | 还能做什么 |
 | --- | --- | --- |
-| `control_disabled` | 本机 bootstrap 没写 `allowControl: true` | 改 bootstrap 后重启 agent |
+| `control_disabled` | 本机 `allowControl` 是 `observe`（不收文件）或 `stage`（不收启停指令） | 改 bootstrap 后重启 agent |
 | `busy` | 上一条指令还在跑 | 稍后重试 |
 | `not_configured` | 本机配置里没有这个组件 | 主节点保存配置 → 重发 hello |
 | `unsupported` | `kind` 不认识 / 纯文件组件 | 只能人工处理 |

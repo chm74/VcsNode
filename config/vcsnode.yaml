@@ -546,13 +546,13 @@ nodes:
     # 145 上应写 http://172.16.1.207:3601/chatHub，否则客户端会「进程活着但注册不上」。
     components:
       generateclient:
-        localRoot: 'D:\SceneAutomationWork\Releases\main-test\GenerateClient'
+        localRoot: 'D:\SceneAutomationWorker\Releases\main-test\GenerateClient'
         health:                     # 145 的客户端连的是 207 的 webapi
           type: connection
           remoteHost: 172.16.1.207
           remotePort: 3601
       generatetool:
-        localRoot: 'D:\SceneAutomationWork\Releases\main-test\GenerateTool'
+        localRoot: 'D:\SceneAutomationWorker\Releases\main-test\GenerateTool'
         health:
           type: connection
           remoteHost: 172.16.1.207
@@ -561,7 +561,7 @@ nodes:
       shp_plants:     { localRoot: 'D:\SceneAutomationV3\Tools\ShapefileTool.Plants.20230905' }
       shp_buildings:  { localRoot: 'D:\SceneAutomationV3\Tools\ShapefileTool.Buildings.20230905' }
       workerhost:
-        localRoot: 'D:\SceneAutomationWork\Releases\main-test\SceneAutomation.WorkerHost'
+        localRoot: 'D:\SceneAutomationWorker\Releases\main-test\SceneAutomation.WorkerHost'
         health:                     # 145 没有 webapi，连 207
           type: connection
           remoteHost: 172.16.1.207

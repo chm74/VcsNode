@@ -338,6 +338,12 @@ async function runTask(body = {}, req = null) {
   }
 
   const by = req ? String(req.socket.remoteAddress || '').replace(/^::ffff:/, '') : null;
+  // 控制权限由成员自己的 bootstrap 决定；主节点先挡，省得指令发过去再被 nack
+  if (n.control !== 'full') {
+    throw fail(409, 'control_disabled', n.control === 'stage'
+      ? `${id} 的控制权限是 stage（可收更新文件，不能启停）：要启停请把这台的 allowControl 改成 "full" 后重启 agent`
+      : `${id} 的控制权限是 observe（只读）：不收更新文件，也不启停`);
+  }
   const timeoutMs = action === 'stop' ? 30000 : 60000; // 启动/重启要等进程被认出来
   let r;
   try {
@@ -458,6 +464,17 @@ async function runStage(body = {}, req = null) {
     if (!found[1].online) offline.push(id);
   }
   if (offline.length) throw fail(409, 'node_offline', `${offline.join('、')} 不在线：等它连上再发，或者在弹窗里取消勾选它`);
+
+  // 只读（observe）的成员连文件都不收：明确拒绝，别发过去等 nack
+  const readOnly = [];
+  for (const [id, t] of targets) {
+    const n = registry.nodes.get(t.nodeId);
+    if ((n?.control || 'observe') === 'observe') readOnly.push(id);
+  }
+  if (readOnly.length) {
+    throw fail(409, 'control_disabled',
+      `${readOnly.join('、')} 是只读成员（observe）：不收更新文件。把这台的 allowControl 改成 "stage"（只收文件）或 "full" 后重启 agent，或在弹窗里取消勾选它`);
+  }
 
   // 4) 要覆盖的组件不能还在跑（覆盖正被读的文件只会得到一堆半新半旧）
   const matrix = registry.uiPayload().matrix || {};
